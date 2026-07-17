@@ -172,3 +172,53 @@ class TestApplyServerFromIdle:
         # Consumed + marked done.
         assert commands.pending(db) == []
         assert commands.recent(db, limit=1)[0].result == "ok:applied"
+
+
+class TestRefreshPlaylistFromIdle:
+    """Regression: an idle bot with zero stations must still process
+    refresh_playlist command without returning 'error: no servers configured'.
+    """
+
+    async def test_refresh_playlist_runs_when_idle(self, db: Database) -> None:
+        calls: list[tuple[str, dict | None]] = []
+
+        class FakeProvider:
+            async def refresh(self, archive_org_items: str | None = None) -> dict:
+                calls.append(("refresh", {"archive_org_items": archive_org_items}))
+                return {"added": 5, "updated": 0, "total": 5, "errors": {}}
+
+        provider = FakeProvider()
+        stations: dict[str, object] = {}
+
+        async def handler(command: str, payload: dict | None) -> str:
+            if command == "refresh_playlist":
+                try:
+                    items = (payload or {}).get("archive_org_items") if payload else None
+                    if not items:
+                        from db.models import BotStateKey
+
+                        items = db.get_state(BotStateKey.ARCHIVE_ORG_ITEMS)
+                    res = await provider.refresh(archive_org_items=items)
+                    return f"ok:{res}"
+                except Exception as exc:
+                    return f"error: {exc}"
+            if not stations:
+                return "error: no servers configured"
+            return "ok"
+
+        scheduler = Scheduler(db=db, tracker=SessionTracker(db), command_handler=handler)
+
+        commands.enqueue(
+            db,
+            command="refresh_playlist",
+            requested_by="42",
+            payload={"archive_org_items": "Hawkins_Lectures_transcoded_actual_files"},
+        )
+        n = await scheduler.drain_commands()
+
+        assert n == 1
+        assert len(calls) == 1
+        assert calls[0][1]["archive_org_items"] == "Hawkins_Lectures_transcoded_actual_files"
+        recent = commands.recent(db, limit=1)[0]
+        assert recent.result.startswith("ok:")
+        assert "'added': 5" in recent.result

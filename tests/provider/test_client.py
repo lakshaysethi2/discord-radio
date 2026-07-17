@@ -193,6 +193,17 @@ def test_max_retries_min_one() -> None:
 
 
 @respx.mock
+async def test_refresh_calls_post(client: FileProviderClient) -> None:
+    route = respx.post(f"{BASE}/refresh").mock(
+        return_value=httpx.Response(200, json={"added": 2, "updated": 0, "total": 2})
+    )
+    async with client as fp:
+        res = await fp.refresh(archive_org_items="item1,item2")
+    assert route.called
+    assert res == {"added": 2, "updated": 0, "total": 2}
+
+
+@respx.mock
 async def test_list_tracks_and_jump_to(client: FileProviderClient) -> None:
     respx.get(f"{BASE}/tracks").mock(
         return_value=httpx.Response(200, json={"items": [TRACK_JSON], "total": 1})

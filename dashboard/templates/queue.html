@@ -12,6 +12,16 @@
     {% if q %}<a href="/queue?page_size={{ page_size }}" class="self-center text-slate-400">clear</a>{% endif %}
   </form>
 </div>
+
+<div class="mb-6 rounded-lg bg-slate-900 border border-slate-800 p-4">
+  <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-2">Archive.org Sources (ARCHIVE_ORG_ITEMS)</h2>
+  <form action="/controls/archive_items" method="post" class="flex flex-wrap items-center gap-3 text-sm">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="text" name="archive_org_items" value="{{ archive_org_items }}" placeholder="e.g. Hawkins_Lectures_transcoded_actual_files" class="grow px-3 py-1.5 rounded bg-slate-950 border border-slate-700 text-slate-200">
+    <button class="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-medium">Save &amp; Rescan</button>
+  </form>
+  <p class="mt-1.5 text-xs text-slate-500">Comma-separated Internet Archive collection/item IDs (e.g. Hawkins_Lectures_transcoded_actual_files). Tracks are scanned and loaded directly into the playlist queue.</p>
+</div>
 {% if error %}<div class="p-3 mb-4 text-sm text-red-200 bg-red-900/30 border border-red-500/40 rounded-lg">{{ error }}</div>{% endif %}
 {% if command_flash %}<div class="p-3 mb-4 text-sm text-emerald-200 bg-emerald-900/30 border border-emerald-500/40 rounded-lg">{{ command_flash }}</div>{% endif %}
 {% if current_page and current_page != page %}<a href="/queue?page={{ current_page }}&page_size={{ page_size }}" class="block mb-3 text-xs text-slate-400 hover:text-white">⏱ Jump to currently playing (page {{ current_page }})</a>{% endif %}

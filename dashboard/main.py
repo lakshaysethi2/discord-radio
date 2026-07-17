@@ -460,6 +460,11 @@ def create_app(
         if current_track_id:
             current_page = (current.playlist_position // page_size) + 1
         sess = _get_session(request) or {}
+        import os
+
+        archive_org_items = app.state.db.get_state(BotStateKey.ARCHIVE_ORG_ITEMS)
+        if archive_org_items is None:
+            archive_org_items = os.environ.get("ARCHIVE_ORG_ITEMS", "")
         return _render(
             request,
             "queue.html",
@@ -474,6 +479,7 @@ def create_app(
                 "current_track_id": current_track_id,
                 "current_page": current_page,
                 "error": error,
+                "archive_org_items": archive_org_items,
                 "csrf": sess.get("csrf", ""),
                 "command_flash": request.query_params.get("flash"),
             },
@@ -524,6 +530,29 @@ def create_app(
         )
         return RedirectResponse(
             f"/dashboard?flash=Queued+volume+{volume_percent}%25", status_code=303
+        )
+
+    @app.post("/controls/archive_items")
+    async def set_archive_items(
+        request: Request,
+        archive_org_items: str = Form(""),
+        csrf: str = Form(""),
+        user: auth.SessionUser = Depends(_require_admin),
+    ) -> Response:
+        sess = _get_session(request) or {}
+        if not sess.get("csrf") or not hmac.compare_digest(sess["csrf"], csrf):
+            raise HTTPException(status_code=403, detail="invalid CSRF token")
+
+        items_str = archive_org_items.strip()
+        app.state.db.set_state(BotStateKey.ARCHIVE_ORG_ITEMS, items_str)
+        commands.enqueue(
+            app.state.db,
+            command="refresh_playlist",
+            requested_by=user.user_id,
+            payload={"archive_org_items": items_str},
+        )
+        return RedirectResponse(
+            "/queue?flash=Saved+archive.org+items+and+queued+playlist+rescan", status_code=303
         )
 
     # ---- Controls ----

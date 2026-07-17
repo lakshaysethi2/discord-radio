@@ -348,6 +348,19 @@ class ProviderDB:
                     updated += 1
         return added, updated
 
+    def prune_provider_tracks(self, provider: str, keep_source_refs: set[str]) -> int:
+        """Remove tracks belonging to `provider` that are no longer in `keep_source_refs`."""
+        with self.transaction() as cur:
+            if not keep_source_refs:
+                cur.execute("DELETE FROM tracks WHERE provider=?", (provider,))
+            else:
+                placeholders = ",".join("?" for _ in keep_source_refs)
+                cur.execute(
+                    f"DELETE FROM tracks WHERE provider=? AND source_ref NOT IN ({placeholders})",
+                    (provider, *keep_source_refs),
+                )
+            return cur.rowcount
+
     # -------------------------------------------------------------- cache
     def record_cache(self, track_id: str, path: str, size_bytes: int) -> None:
         self.execute(

@@ -125,8 +125,9 @@ def create_app(service: Service | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.post("/refresh")
-    def post_refresh() -> dict:
-        return svc().refresh_playlist()
+    def post_refresh(payload: dict | None = None) -> dict:
+        items = payload.get("archive_org_items") if payload else None
+        return svc().refresh_playlist(archive_org_items=items)
 
     return app
 

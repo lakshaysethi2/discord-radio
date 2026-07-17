@@ -43,6 +43,36 @@ class PlaylistEmpty(RuntimeError):
     pass
 
 
+def _get_tv_db_path() -> Path | None:
+    import os
+
+    db_env = os.environ.get("DATABASE_PATH")
+    if db_env:
+        return Path(db_env)
+    if Path("/data/tv.db").exists():
+        return Path("/data/tv.db")
+    if Path("./data/tv.db").exists():
+        return Path("./data/tv.db")
+    return None
+
+
+def _get_tv_db_archive_items() -> list[str] | None:
+    tv_db_path = _get_tv_db_path()
+    if tv_db_path and tv_db_path.exists():
+        with contextlib.suppress(Exception):
+            import sqlite3
+
+            conn = sqlite3.connect(f"file:{tv_db_path}?mode=ro", uri=True, timeout=5.0)
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM bot_state WHERE key='archive_org_items'")
+            row = cur.fetchone()
+            conn.close()
+            if row and row[0] is not None:
+                db_val = row[0].strip()
+                return [x.strip() for x in db_val.split(",") if x.strip()]
+    return None
+
+
 class Service:
     """Orchestrates providers, DB and cache into a coherent playlist.
 
@@ -77,13 +107,39 @@ class Service:
             return lk
 
     # ---------------------------------------------------------------- scan
-    def refresh_playlist(self) -> dict:
+    def refresh_playlist(self, archive_org_items: str | list[str] | None = None) -> dict:
         """Ask every configured provider for its tracks; merge into the DB."""
+        if archive_org_items is None:
+            db_items = _get_tv_db_archive_items()
+            if db_items is not None:
+                archive_org_items = db_items
+
+        if archive_org_items is not None:
+            if isinstance(archive_org_items, str):
+                items = [x.strip() for x in archive_org_items.split(",") if x.strip()]
+            else:
+                items = [x.strip() for x in archive_org_items if x.strip()]
+
+            from file_provider.providers.archive import ArchiveOrgProvider
+
+            with self._lock:
+                archive_provider = next(
+                    (p for p in self.providers if isinstance(p, ArchiveOrgProvider)), None
+                )
+                if archive_provider is None:
+                    if items:
+                        archive_provider = ArchiveOrgProvider(item_ids=items)
+                        self.providers.append(archive_provider)
+                        self._provider_by_name[archive_provider.name] = archive_provider
+                else:
+                    archive_provider.item_ids = items
+
         added_total = updated_total = 0
         errors: dict[str, str] = {}
         for provider in self.providers:
             if not provider.is_configured():
                 log.info("skip provider %s: not configured", provider.name)
+                self.db.prune_provider_tracks(provider.name, set())
                 continue
             try:
                 found = provider.list_tracks()
@@ -95,6 +151,8 @@ class Service:
             self.db.mark_provider(provider.name, healthy=True)
             rows = self._provider_tracks_to_rows(provider, found)
             added, updated = self.db.upsert_tracks(rows)
+            active_refs = {t.source_ref for t in found}
+            self.db.prune_provider_tracks(provider.name, active_refs)
             added_total += added
             updated_total += updated
         return {
@@ -340,14 +398,19 @@ def _providers_from_config(config: Config) -> list[BaseProvider]:
     """Instantiate providers per FILE_PROVIDER_ORDER."""
     from file_provider.providers.local import LocalProvider
 
+    archive_items = _get_tv_db_archive_items()
+    if archive_items is None:
+        archive_items = list(config.archive_org_items)
+
     out: list[BaseProvider] = []
+    has_archive = "archive" in config.provider_order
     for name in config.provider_order:
         if name == "local":
             out.append(LocalProvider(config.local_media_path))
         elif name == "archive":
             from file_provider.providers.archive import ArchiveOrgProvider
 
-            out.append(ArchiveOrgProvider(item_ids=config.archive_org_items))
+            out.append(ArchiveOrgProvider(item_ids=archive_items))
         elif name == "telegram":
             from file_provider.providers.telegram import TelegramProvider
 
@@ -361,4 +424,10 @@ def _providers_from_config(config: Config) -> list[BaseProvider]:
             )
         else:
             log.warning("unknown provider '%s' in FILE_PROVIDER_ORDER", name)
+
+    if not has_archive and archive_items:
+        from file_provider.providers.archive import ArchiveOrgProvider
+
+        out.append(ArchiveOrgProvider(item_ids=archive_items))
+
     return out
