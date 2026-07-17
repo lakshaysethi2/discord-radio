@@ -6,7 +6,7 @@ voice/text/embeds/milestones), admins manage it from the dashboard **Servers**
 page, and the legacy single-guild env vars became an optional one-time bootstrap.
 
 ## Test scoreboard
-- **354 tests passing** (0 failing, 0 skipped)
+- **355 tests passing** (0 failing, 0 skipped)
 - `ruff check .` clean · `ruff format --check .` clean
 - `make test`, `make lint`, `make help` all work
 
@@ -70,7 +70,7 @@ page, and the legacy single-guild env vars became an optional one-time bootstrap
 5. Put Cloudflare / nginx in front of dashboard on :8000 (HTTPS terminator; `--proxy-headers` already set).
 
 ## How to resume in a fresh session
-1. `git status` — should be clean on `arena/019f6df3-discord-radio`.
+1. `git status` — should be clean on `arena/019f6f2f-discord-radio`.
 2. `make build` — builds all Docker images.
 3. `make test` — runs the 263 tests inside a container.
 4. `make lint` — ruff check + format check inside a container.
@@ -125,4 +125,28 @@ Addressed the three items raised in code review:
   `tests/dashboard/test_servers.py`.
 
 Verification after fixes: `.venv/bin/python -m pytest -q` → **354 passed**;
+`ruff check .` clean; `ruff format --check .` clean.
+
+## Manual-pause regression fix (2nd review pass) — 2026-07-17
+The second review pass found one remaining regression: the dashboard **pause**
+command stopped every station player but never froze the authoritative
+`RadioClock`, so the shared clock kept advancing while "paused". A later
+**resume** then re-joined all stations at the wall-clock position — silently
+skipping the paused interval.
+- Introduced an in-memory `admin_paused` flag (independent of listener count)
+  and a single `sync_radio_state()` routine that is now the one place the
+  shared radio is frozen/resumed: the radio plays only when
+  `has_listeners and not admin_paused`. `pause` sets `admin_paused=True` and
+  freezes the clock; `resume` clears it and restarts the clock from the frozen
+  offset before re-joining each live station at `radio.position()`. Voice-state
+  changes call the same routine (without clearing the manual-pause flag), and
+  the `JOINED` resume is gated on `not admin_paused` so an admin pause keeps
+  every server silent until explicitly resumed. `play_track` also clears the
+  manual pause (playing a chosen track is an explicit play intent).
+- Regression test `tests/bot/test_radio_clock.py::
+  test_dashboard_pause_freezes_clock_and_resume_keeps_position` reproduces the
+  exact scenario (radio at 30s → admin pause → 5 min wall-clock passes → admin
+  resume) and asserts the resumed seek is 30s, not 330s.
+
+Verification: `.venv/bin/python -m pytest -q` → **355 passed**;
 `ruff check .` clean; `ruff format --check .` clean.

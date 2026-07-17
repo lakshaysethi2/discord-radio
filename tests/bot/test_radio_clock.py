@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from bot.main import RadioClock, resume_station_at_radio_position
+from bot.main import RadioClock, resume_station_at_radio_position, sync_radio_state
 from provider.client import TrackResponse
 
 
@@ -27,6 +27,16 @@ class FakeProvider:
 class FakeState:
     def __init__(self, track_id: str | None) -> None:
         self.current_track_id = track_id
+        self.is_paused = False
+        self.playback_position_seconds = 0
+
+
+class FakeStation:
+    """Minimal stand-in: sync_radio_state only reads listener_count."""
+
+    def __init__(self, listener_count: int) -> None:
+        self.listener_count = listener_count
+        self.player = FakePlayer()
 
 
 def _track(track_id: str = "t1") -> TrackResponse:
@@ -113,3 +123,49 @@ async def test_resume_falls_back_when_track_unavailable(monkeypatch) -> None:
     result = await resume_station_at_radio_position(player, UnavailableProvider(), state, radio)
     assert result is None
     assert player.starts == []
+
+
+async def test_dashboard_pause_freezes_clock_and_resume_keeps_position(monkeypatch) -> None:
+    """Regression (review #2): an admin (dashboard) pause must freeze the
+    shared ``RadioClock``, and the subsequent dashboard resume must re-join
+    stations at the pause offset — not at the later wall-clock position (which
+    would silently skip audio).
+
+    Scenario: radio playing for 30s -> admin pause -> 5 min wall-clock passes
+    -> admin resume. The resumed seek must be ~30s, not ~330s.
+    """
+    seq = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: seq[0])
+
+    radio = RadioClock()
+    radio.init_from_state(0.0, playing=True)
+    seq[0] = 1030.0  # radio has been playing for 30s
+    assert radio.position() == 30.0
+
+    state = FakeState("t1")
+
+    # One server with a listener present.
+    stations = {"g1": FakeStation(listener_count=1)}
+
+    # --- Admin presses Pause ---
+    admin_paused = True
+    sync_radio_state(stations, radio, state, admin_paused=admin_paused)
+    assert state.is_paused is True
+
+    # Five minutes of wall-clock time pass while paused.
+    seq[0] = 1330.0
+    # The clock must stay frozen at 30s, NOT advance to 330s.
+    assert radio.position() == 30.0
+
+    # --- Admin presses Resume ---
+    admin_paused = False
+    sync_radio_state(stations, radio, state, admin_paused=admin_paused)
+    assert state.is_paused is False
+
+    # The resume command re-joins the live station at radio.position().
+    track = await resume_station_at_radio_position(
+        stations["g1"].player, FakeProvider(_track()), state, radio
+    )
+    assert track is not None
+    # Critical: seek equals the pause offset (30), not the wall-clock (330).
+    assert stations["g1"].player.starts == [(track, 30.0)]

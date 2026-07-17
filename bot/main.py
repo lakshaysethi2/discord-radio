@@ -140,6 +140,41 @@ async def resume_station_at_radio_position(
     return track
 
 
+def sync_radio_state(
+    stations: dict[str, Station],
+    radio: RadioClock,
+    state: BotState,
+    *,
+    admin_paused: bool,
+) -> bool:
+    """Compute and apply the effective shared-radio state.
+
+    The radio plays only when at least one server has listeners AND no manual
+    admin (dashboard) pause is in effect. This keeps the authoritative
+    ``RadioClock`` frozen whenever playback is effectively stopped — whether
+    because the last listener left or because an admin pressed pause — and
+    resumes it from the exact frozen offset when playback should continue.
+
+    ``admin_paused`` is the manual pause flag owned by the orchestrator; it is
+    *not* cleared by listener changes, so an admin pause survives people
+    joining/leaving. Returns ``True`` if the radio is now playing, else
+    ``False``.
+    """
+    has_listeners = any(s.listener_count > 0 for s in stations.values())
+    should_play = has_listeners and not admin_paused
+    if should_play and not radio.is_playing():
+        # Resume the clock from wherever it was frozen — every station will
+        # re-join the stream at this same offset.
+        radio.start(radio.position())
+    elif not should_play and radio.is_playing():
+        # Freeze the clock at the current position.
+        radio.pause()
+    state.is_paused = not should_play
+    if not should_play:
+        state.playback_position_seconds = int(radio.position())
+    return should_play
+
+
 def _init_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -246,25 +281,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
     # The single authoritative shared-radio clock (see RadioClock).
     radio = RadioClock()
     ready_done = False  # guard against on_ready firing more than once
-
-    def _update_global_paused() -> None:
-        """Keep the shared-radio pause flag + clock in sync with total listeners.
-
-        The radio is "paused" only when nobody is listening anywhere. When the
-        last listener leaves we freeze the radio clock (so its position stops
-        advancing); when the first listener returns we resume the clock from
-        the frozen position.
-        """
-        total = sum(s.listener_count for s in stations.values())
-        if total == 0:
-            if not state.is_paused:
-                state.is_paused = True
-                radio.pause()
-                state.playback_position_seconds = int(radio.position())
-        else:
-            if state.is_paused:
-                state.is_paused = False
-                radio.start(radio.position())
+    admin_paused = False  # manual dashboard pause; independent of listeners
 
     async def _handle_command(command: str, payload: dict | None) -> str:
         """Called by the scheduler's command loop for each pending row.
@@ -272,6 +289,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
         Controls act on the shared stream, so we fan them out to every station
         that currently has listeners.
         """
+        nonlocal admin_paused
         if not stations:
             return "error: no servers configured"
         if command == "skip":
@@ -280,20 +298,25 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                     await st.player.skip()
             return "ok:skipped"
         if command == "pause":
+            admin_paused = True
             for st in stations.values():
                 if st.listener_count > 0:
                     await st.player.pause()
                     st.is_paused = True
-            _update_global_paused()
+            # Freeze the shared clock so time does not advance while paused.
+            sync_radio_state(stations, radio, state, admin_paused=admin_paused)
             return "ok:paused"
         if command == "resume":
+            admin_paused = False
+            # Resume the shared clock first (from its frozen offset); stations
+            # then re-join the stream at the exact same position.
+            sync_radio_state(stations, radio, state, admin_paused=admin_paused)
             for st in stations.values():
                 if st.listener_count > 0:
                     await resume_station_at_radio_position(st.player, provider, state, radio)
                     st.is_paused = False
                     if st.player.current_track is not None:
                         await st.now_playing.post_or_replace(st.player.current_track)
-            _update_global_paused()
             return "ok:resumed"
         if command == "set_volume":
             try:
@@ -316,7 +339,9 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 return f"error: jump failed: {exc}"
             if not track.ready or not track.local_path:
                 return f"error: track {track_id} not ready"
-            # Jumping to a chosen track resets the shared cursor to offset 0.
+            # Playing a chosen track is an explicit play intent: clear any
+            # manual pause and reset the shared cursor to offset 0.
+            admin_paused = False
             radio.start(0)
             state.playback_position_seconds = 0
             for st in stations.values():
@@ -550,7 +575,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             )
             listeners = _non_bot_members(after.channel) if after.channel else []
             station.listener_count = len(listeners)
-            if should_resume(len(listeners), station.is_paused):
+            if not admin_paused and should_resume(len(listeners), station.is_paused):
                 # Join the shared radio *at its current position*, not at a
                 # stale per-player clock — every server hears the same offset.
                 await resume_station_at_radio_position(station.player, provider, state, radio)
@@ -577,7 +602,9 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 station.is_paused = True
             station.now_playing.trigger_watcher_count_update()
 
-        _update_global_paused()
+        # Keep the shared clock frozen/paused in step with listeners + any
+        # manual admin pause (does not clear the manual-pause flag).
+        sync_radio_state(stations, radio, state, admin_paused=admin_paused)
 
     # Graceful shutdown: close scheduler + provider + DB.
     def _install_signal_handlers() -> None:
