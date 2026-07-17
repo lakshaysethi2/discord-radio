@@ -102,7 +102,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 ---
 
 ## Nice-to-have / future
-- [ ] Live watcher count in Now Playing embed (edit message on join/leave with rate limit)
+- [x] Live watcher count in Now Playing embed (edit message on join/leave with rate limit)
 - [ ] Additional providers (YouTube, GDrive, Torrent) per §4.1
 - [ ] SSE-driven live dashboard instead of full refresh
 - [ ] Discord slash commands mirroring dashboard controls
