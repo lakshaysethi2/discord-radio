@@ -41,8 +41,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] `bot/main.py` — discord.py bot entry, intents, ready handler
 - [x] `bot/player.py` — FFmpeg audio source w/ `-ss` resume, elapsed tracking, track-finished callback
 - [x] `bot/state.py` — thin wrapper over `bot_state` table
+- [x] `bot/config.py` — env loader
+- [x] `bot/presence.py` — pure voice-transition logic (extracted for testability)
 - [x] Join configured voice channel on ready; graceful shutdown
-- [x] Unit tests for elapsed math + state persistence
+- [x] Unit tests: 33 (state 16 + player 17)
 
 ## Phase 5 — Session tracking (§6)
 - [x] `bot/tracker.py` — voice_state_update handler, open/close sessions, min-threshold drop

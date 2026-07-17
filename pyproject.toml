@@ -33,6 +33,8 @@ addopts = "-ra --strict-markers"
 filterwarnings = [
     "ignore::DeprecationWarning:websockets",
     "ignore::DeprecationWarning:audioop",
+    "ignore::DeprecationWarning:httpx",  # per-request cookies=<...> deprecation
+    "ignore::starlette.routing.StarletteDeprecationWarning",
 ]
 
 [tool.coverage.run]

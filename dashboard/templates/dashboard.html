@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — TV Bot{% endblock %}
+{% block content %}
+  <div class="grid gap-6 md:grid-cols-3">
+    <section class="md:col-span-2 rounded-lg bg-slate-900 p-5 border border-slate-800">
+      <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-2">Now Playing</h2>
+      {% if track_title %}
+        <p class="text-lg font-semibold">{{ track_title }}</p>
+        <p class="text-sm text-slate-400 mt-1">
+          Track #{{ now.playlist_position + 1 }}
+          · {{ elapsed_fmt }} elapsed
+          {% if track_duration %}/ {{ duration_fmt }}{% endif %}
+          {% if now.is_paused %} · <span class="text-amber-400">paused</span>{% endif %}
+        </p>
+      {% else %}
+        <p class="text-slate-400">Nothing playing yet.</p>
+      {% endif %}
+    </section>
+    <section class="rounded-lg bg-slate-900 p-5 border border-slate-800">
+      <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-3">Currently watching ({{ watchers|length }})</h2>
+      {% if watchers %}
+        <ul class="space-y-1 text-sm">
+          {% for w in watchers %}
+            <li class="flex justify-between gap-3">
+              <span class="truncate">{{ w.server_nickname or w.username }}</span>
+              <span class="text-slate-400 tabular-nums">{{ w.seconds_so_far | hms }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-slate-500 text-sm">No one is here right now.</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <section class="mt-6 rounded-lg bg-slate-900 p-5 border border-slate-800">
+    <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-3">Controls</h2>
+    <form method="post" action="/controls" class="flex flex-wrap gap-2 text-sm">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button name="action" value="skip"    class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Skip</button>
+      <button name="action" value="pause"   class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Pause</button>
+      <button name="action" value="resume"  class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Resume</button>
+      <button name="action" value="refresh_playlist" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Rescan playlist</button>
+    </form>
+    {% if pending %}
+      <p class="mt-3 text-xs text-amber-400">Pending: {{ pending|length }} command(s) waiting for the bot.</p>
+    {% endif %}
+    {% if command_flash %}
+      <p class="mt-3 text-xs text-emerald-400">{{ command_flash }}</p>
+    {% endif %}
+  </section>
+{% endblock %}

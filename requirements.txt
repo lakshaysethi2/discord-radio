@@ -10,6 +10,7 @@ fastapi>=0.110,<1
 uvicorn[standard]>=0.29,<1
 jinja2>=3.1,<4
 itsdangerous>=2.1,<3  # signed session cookies
+python-multipart>=0.0.9,<1  # FastAPI form parsing
 authlib>=1.3,<2      # Discord OAuth2
 
 # --- HTTP client (bot -> file provider, dashboard -> Discord) ---

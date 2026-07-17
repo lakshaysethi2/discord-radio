@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from bot.milestones import MilestoneAnnouncer, MilestoneChecker
 from bot.tracker import SessionTracker, month_key_for
+from dashboard import commands as cmd_queue
 from db.database import Database
 from db.models import BotStateKey
+
+CommandHandler = Callable[[str, dict | None], Awaitable[str]]
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +100,8 @@ class Scheduler:
         milestones: MilestoneAnnouncer | None = None,
         checkpoint_interval_seconds: int = 3600,
         monthly_check_interval_seconds: int = 3600,
+        command_poll_interval_seconds: int = 2,
+        command_handler: CommandHandler | None = None,
     ) -> None:
         self.db = db
         self.tracker = tracker
@@ -104,6 +110,8 @@ class Scheduler:
         self._checker = MilestoneChecker(db) if milestones is None else milestones.checker
         self.checkpoint_interval_seconds = checkpoint_interval_seconds
         self.monthly_check_interval_seconds = monthly_check_interval_seconds
+        self.command_poll_interval_seconds = command_poll_interval_seconds
+        self.command_handler = command_handler
         self._tasks: list[asyncio.Task] = []
 
     def start(self) -> None:
@@ -114,6 +122,8 @@ class Scheduler:
         loop = asyncio.get_running_loop()
         self._tasks.append(loop.create_task(self._checkpoint_loop(), name="checkpoint-loop"))
         self._tasks.append(loop.create_task(self._monthly_loop(), name="monthly-loop"))
+        if self.command_handler is not None:
+            self._tasks.append(loop.create_task(self._command_loop(), name="command-loop"))
 
     def stop(self) -> None:
         for t in self._tasks:
@@ -157,3 +167,28 @@ class Scheduler:
             # No announcer wired up (tests) — still flip the flags so the DB
             # stays consistent.
             self._checker.check_user(user_id)
+
+    async def _command_loop(self) -> None:  # pragma: no cover — timing-heavy
+        try:
+            while True:
+                await asyncio.sleep(self.command_poll_interval_seconds)
+                try:
+                    await self.drain_commands()
+                except Exception:
+                    log.exception("command loop iteration failed")
+        except asyncio.CancelledError:
+            pass
+
+    async def drain_commands(self) -> int:
+        """Execute any pending dashboard_commands rows. Returns count run."""
+        if self.command_handler is None:
+            return 0
+        pending = cmd_queue.pending(self.db)
+        for row in pending:
+            try:
+                result = await self.command_handler(row.command, row.payload)
+            except Exception as exc:
+                result = f"error: {exc}"
+                log.exception("command %s (%s) failed", row.command_id, row.command)
+            cmd_queue.mark_done(self.db, row.command_id, result=result or "ok")
+        return len(pending)

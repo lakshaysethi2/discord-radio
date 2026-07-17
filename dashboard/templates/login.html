@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Sign in — TV Bot{% endblock %}
+{% block content %}
+  <div class="max-w-md mx-auto text-center mt-16 p-8 rounded-lg bg-slate-900 border border-slate-800">
+    <h1 class="text-xl font-semibold mb-2">Admin sign-in</h1>
+    <p class="text-slate-400 text-sm mb-6">This dashboard is restricted to whitelisted Discord users.</p>
+    {% if error %}
+      <p class="text-amber-400 text-sm mb-4">{{ error }}</p>
+    {% endif %}
+    {% if oauth_configured %}
+      <a href="/login" class="inline-block px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-sm">Login with Discord</a>
+    {% else %}
+      <p class="text-amber-400 text-sm">OAuth is not configured. Set DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, and DISCORD_REDIRECT_URI.</p>
+    {% endif %}
+  </div>
+{% endblock %}

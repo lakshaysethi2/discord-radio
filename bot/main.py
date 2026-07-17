@@ -19,6 +19,8 @@ import contextlib
 import logging
 import signal
 
+import httpx
+
 from bot.config import BotConfig, load
 from bot.milestones import MilestoneAnnouncer, NowPlaying
 from bot.player import Player
@@ -91,17 +93,43 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
     now_playing = NowPlaying(
         client=client, text_channel_id=config.text_channel_id, state=state, db=db
     )
+    player: Player | None = None
+    voice: object | None = None
+    text_channel = None
+    ready_done = False  # guard against on_ready firing more than once
+
+    async def _handle_command(command: str, _payload) -> str:
+        """Called by the scheduler's command loop for each pending row."""
+        if player is None:
+            return "error: player not ready"
+        if command == "skip":
+            await player.skip()
+            return "ok:skipped"
+        if command == "pause":
+            await player.pause()
+            return "ok:paused"
+        if command == "resume":
+            await player.resume()
+            if player.current_track is not None:
+                await now_playing.post_or_replace(player.current_track)
+            return "ok:resumed"
+        if command == "refresh_playlist":
+            # File-provider owns playlists — ask it to rescan.
+            try:
+                async with httpx.AsyncClient(base_url=config.file_provider_base_url) as h:
+                    r = await h.post("/refresh", timeout=30)
+                return f"ok:{r.status_code}"
+            except Exception as exc:
+                return f"error: {exc}"
+        return f"error: unknown command {command!r}"
+
     scheduler = Scheduler(
         db=db,
         tracker=tracker,
         milestones=milestones,
         checkpoint_interval_seconds=config.checkpoint_interval_seconds,
+        command_handler=_handle_command,
     )
-
-    player: Player | None = None
-    voice: object | None = None
-    text_channel = None
-    ready_done = False  # guard against on_ready firing more than once
 
     async def _advance_and_announce(_player: Player, finished_track) -> None:
         """on_finish: mark played, ask for next, start it, repost embed."""
