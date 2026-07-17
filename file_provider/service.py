@@ -195,14 +195,15 @@ class Service:
             return row["track_id"] if row else None
 
     def _metadata_payload(self, row) -> TrackPayload:
-        cached = self.cache.get(row["track_id"])
+        cache_path = row["cache_file_path"]
+        cached = Path(cache_path) if cache_path and Path(cache_path).is_file() else None
         return TrackPayload(
             track_id=row["track_id"],
             title=row["title"],
             duration_seconds=int(row["duration_seconds"] or 0),
             local_path=str(cached) if cached else "",
             provider_used=row["provider"],
-            playlist_position=self.db.position_of(row["track_id"]) or 0,
+            playlist_position=int(row["playlist_position"]),
             ready=cached is not None,
             has_video=bool(row["has_video"]),
         )

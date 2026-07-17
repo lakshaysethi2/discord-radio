@@ -368,3 +368,14 @@ class TestVolumeControls:
             cookies=admin_cookie,
         )
         assert response.status_code == 422
+
+    def test_volume_control_accepts_250_percent(
+        self, client: TestClient, admin_cookie: dict, db: Database
+    ) -> None:
+        response = client.post(
+            "/controls/volume",
+            data={"volume_percent": "250", "csrf": "csrf-test"},
+            cookies=admin_cookie,
+        )
+        assert response.status_code == 303
+        assert "250" in db.fetchone("SELECT payload FROM dashboard_commands")["payload"]

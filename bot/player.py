@@ -81,11 +81,10 @@ def default_ffmpeg_source(
         before = f"-ss {seek_seconds:.3f}"
     # -vn drops any video stream just in case the source has one.
     # -loglevel warning keeps the ffmpeg subprocess quiet.
-    return discord.FFmpegPCMAudio(
-        path,
-        before_options=before,
-        options=f"-vn -af volume={volume_percent / 100:.2f} -loglevel warning",
-    )
+    options = "-vn -loglevel warning"
+    if volume_percent != 100:
+        options = f"-vn -af volume={volume_percent / 100:.2f} -loglevel warning"
+    return discord.FFmpegPCMAudio(path, before_options=before, options=options)
 
 
 class Player:
@@ -244,7 +243,7 @@ class Player:
         volume = min(250, max(50, int(volume_percent)))
         async with self._lock:
             self.state.stream_volume_percent = volume
-            if self.current_track is not None and self.voice_client.is_playing():
+            if self.current_track is not None and self.is_playing():
                 position = self.clock.stop()
                 await self._start_locked(self.current_track, seek_seconds=position)
         return volume

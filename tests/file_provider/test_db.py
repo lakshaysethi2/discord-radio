@@ -200,3 +200,9 @@ def test_migration_idempotent(tmp_path) -> None:
         db.migrate()  # third call
     finally:
         db.close()
+
+
+def test_list_all_search_retains_natural_playlist_position(db: ProviderDB) -> None:
+    _insert(db, ["a", "b", "c"])
+    row = db.list_all(search="Tc")[0]
+    assert row["playlist_position"] == 2
