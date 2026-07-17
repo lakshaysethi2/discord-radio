@@ -117,7 +117,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
 
     intents = discord.Intents.default()
     intents.voice_states = True
-    intents.members = True  # to enumerate voice channel members
+    intents.members = False  # voice_states is enough to track channel presence without privileged intent
     intents.guilds = True
     intents.message_content = False  # we don't read messages
 

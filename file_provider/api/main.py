@@ -14,6 +14,8 @@ Endpoints mirror the bot-side client (provider.client.FileProviderClient):
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -26,11 +28,22 @@ log = logging.getLogger(__name__)
 
 
 def create_app(service: Service | None = None) -> FastAPI:
-    app = FastAPI(title="Discord TV File Provider", version="0.1.0")
-
     if service is None:
         service = build_service(config_module.load())
 
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        """Auto-scan providers on startup so the playlist is ready immediately."""
+        s: Service = _app.state.service
+        if s.db.playlist_length() == 0:
+            log.info("playlist empty on startup — running initial scan")
+            result = s.refresh_playlist()
+            log.info("startup scan complete: %s", result)
+        else:
+            log.info("playlist already has %d tracks — skipping startup scan", s.db.playlist_length())
+        yield
+
+    app = FastAPI(title="Discord TV File Provider", version="0.1.0", lifespan=lifespan)
     app.state.service = service
 
     def svc() -> Service:  # tiny accessor, lets tests swap easily
@@ -92,3 +105,4 @@ def create_app(service: Service | None = None) -> FastAPI:
 
 # WSGI/ASGI entry point: `uvicorn file_provider.api.main:app`
 app = create_app()
+
