@@ -465,6 +465,10 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                         channel_id=str(c.id),
                         channel_name=c.name,
                         channel_type=ctype,
+                        # Discord nests a voice channel's text chat under the
+                        # voice channel; capture parent_id so we can default
+                        # *Now Playing* posts to that chat.
+                        parent_id=str(c.category_id) if c.category_id else None,
                     )
                 )
             guilds_db.replace_guild_channels(db, gid, ch_rows)

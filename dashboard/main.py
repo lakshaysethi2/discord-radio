@@ -394,6 +394,11 @@ def create_app(
         text_ids = {ch.channel_id for ch in channels if ch.channel_type == "text"}
         vcid = voice_channel_id if voice_channel_id in voice_ids else None
         tcid = text_channel_id if text_channel_id in text_ids else None
+        if tcid is None:
+            # Default the *Now Playing* posts to the voice channel's own text
+            # chat (Discord nests a text channel under the voice channel when
+            # "text chat in voice" is on) when the admin didn't pick one.
+            tcid = guilds_db.get_associated_text_channel(db, guild_id, vcid)
 
         wants_enabled = enabled == "on"
         if wants_enabled and (vcid is None or tcid is None):

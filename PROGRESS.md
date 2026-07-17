@@ -6,7 +6,7 @@ voice/text/embeds/milestones), admins manage it from the dashboard **Servers**
 page, and the legacy single-guild env vars became an optional one-time bootstrap.
 
 ## Test scoreboard
-- **357 tests passing** (0 failing, 0 skipped)
+- **360 tests passing** (0 failing, 0 skipped)
 - `ruff check .` clean · `ruff format --check .` clean
 - `make test`, `make lint`, `make help` all work
 
@@ -101,6 +101,11 @@ page, and the legacy single-guild env vars became an optional one-time bootstrap
 - New tests: `tests/db/test_guilds.py`, `tests/db/test_guild_tables.py`,
   `tests/bot/test_tracker_guild.py`, `tests/bot/test_guild_scoped_state.py`,
   `tests/bot/test_scheduler_guild.py`, `tests/dashboard/test_servers.py`.
+- The *Text channel (updates)* now defaults to the voice channel's own text
+  chat (Discord nests a `GUILD_TEXT` channel under the voice channel when
+  "text chat in voice" is on) when an admin doesn't pick one. Discovery stores
+  each channel's `parent_id`; `get_associated_text_channel()` resolves it, used
+  by both the dashboard save and the legacy env bootstrap.
 - Verification: `.venv/bin/python -m pytest -q` → **347 passed**; `ruff check .`
   clean; `ruff format --check .` clean.
 

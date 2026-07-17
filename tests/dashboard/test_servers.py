@@ -144,3 +144,33 @@ class TestServersUpdate:
         assert cfg.enabled is False
         assert cfg.voice_channel_id is None
         assert cfg.text_channel_id is None
+
+    def test_defaults_text_to_voice_text_chat(self, client, admin_cookie, db) -> None:
+        guilds_db.discover_guild(db, "1", "Server One")
+        guilds_db.replace_guild_channels(
+            db,
+            "1",
+            [
+                guilds_db.ChannelRow("1", "v1", "Lounge", "voice"),
+                guilds_db.ChannelRow("1", "vt1", "Lounge Chat", "text", parent_id="v1"),
+                guilds_db.ChannelRow("1", "t1", "general", "text"),
+            ],
+        )
+        # Enable with a valid voice channel but no explicit text channel: the
+        # *Now Playing* posts should default to the voice channel's own text chat.
+        r = client.post(
+            "/servers/update",
+            data={
+                "guild_id": "1",
+                "enabled": "on",
+                "voice_channel_id": "v1",
+                # text_channel_id intentionally blank
+                "csrf": "csrf-test",
+            },
+            cookies=admin_cookie,
+        )
+        assert r.status_code == 303
+        cfg = guilds_db.get_guild_config(db, "1")
+        assert cfg.enabled is True
+        assert cfg.voice_channel_id == "v1"
+        assert cfg.text_channel_id == "vt1"

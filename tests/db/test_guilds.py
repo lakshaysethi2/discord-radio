@@ -103,3 +103,46 @@ def test_seed_env_guild_no_channels_does_not_enable(db) -> None:
     guilds_db.seed_env_guild(db, _Cfg())
     cfg = guilds_db.get_guild_config(db, "5")
     assert cfg.enabled is False
+
+
+def test_get_associated_text_channel(db) -> None:
+    guilds_db.discover_guild(db, "1", "Server")
+    guilds_db.replace_guild_channels(
+        db,
+        "1",
+        [
+            guilds_db.ChannelRow("1", "v1", "Lounge", "voice"),
+            guilds_db.ChannelRow("1", "vt1", "Lounge Chat", "text", parent_id="v1"),
+            guilds_db.ChannelRow("1", "t1", "general", "text"),
+        ],
+    )
+    # The text chat nested under v1 is returned; an unrelated text chat is not.
+    assert guilds_db.get_associated_text_channel(db, "1", "v1") == "vt1"
+    # Unknown / missing voice channel -> None.
+    assert guilds_db.get_associated_text_channel(db, "1", "nope") is None
+    assert guilds_db.get_associated_text_channel(db, "1", None) is None
+
+
+def test_seed_env_guild_defaults_text_to_voice_text_chat(db) -> None:
+    guilds_db.discover_guild(db, "5", "EnvGuild")
+    guilds_db.replace_guild_channels(
+        db,
+        "5",
+        [
+            guilds_db.ChannelRow("5", "100", "VC", "voice"),
+            guilds_db.ChannelRow("5", "105", "VC Chat", "text", parent_id="100"),
+        ],
+    )
+
+    # No explicit text channel configured — default to the voice channel's
+    # nested text chat.
+    class _Cfg:
+        guild_id = 5
+        voice_channel_id = 100
+        text_channel_id = None
+
+    guilds_db.seed_env_guild(db, _Cfg())
+    cfg = guilds_db.get_guild_config(db, "5")
+    assert cfg.enabled is True
+    assert cfg.voice_channel_id == "100"
+    assert cfg.text_channel_id == "105"

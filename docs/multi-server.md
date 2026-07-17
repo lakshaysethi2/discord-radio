@@ -55,6 +55,9 @@ everything from the dashboard.
    - **Allow bot to speak here** — toggle on/off.
    - **Voice channel (join)** — pick where the bot connects.
    - **Text channel (updates)** — pick where *Now Playing* + milestones post.
+     If you leave this blank, it defaults to the voice channel's own text chat
+     (Discord nests a text chat under the voice channel when "text chat in
+     voice" is enabled).
    - Click **Save**.
 3. Restart the bot so it re-reads `guild_configs` and (re)connects.
 

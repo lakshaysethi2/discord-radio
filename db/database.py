@@ -96,6 +96,9 @@ class Database:
                 # watch_sessions gained `guild_id` for multi-server tracking —
                 # existing rows default to '' (the "unspecified" guild).
                 self._ensure_column(cur, "watch_sessions", "guild_id", "TEXT NOT NULL DEFAULT ''")
+                # guild_channels gained `parent_id` so we can default a server's
+                # *Now Playing* posts to the voice channel's own text chat.
+                self._ensure_column(cur, "guild_channels", "parent_id", "TEXT")
             finally:
                 cur.close()
 

@@ -121,6 +121,7 @@ SCHEMA: tuple[str, ...] = (
         channel_id   TEXT NOT NULL,
         channel_name TEXT,
         channel_type TEXT,  -- 'voice' | 'text'
+        parent_id    TEXT,  -- for a text chat nested under a voice channel, the voice channel's id
         PRIMARY KEY (guild_id, channel_id)
     )
     """,
