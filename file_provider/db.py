@@ -28,6 +28,7 @@ SCHEMA: tuple[str, ...] = (
         provider          TEXT NOT NULL,     -- provider name that owns the source
         source_ref        TEXT NOT NULL,     -- provider-specific pointer (e.g. telegram msg id)
         sort_order        REAL NOT NULL,     -- REAL so we can insert in-between
+        has_video         INTEGER NOT NULL DEFAULT 0,  -- 1 if source is a video container (FFmpeg strips video)
         added_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(provider, source_ref)
     )
@@ -105,8 +106,21 @@ class ProviderDB:
             try:
                 for stmt in SCHEMA:
                     cur.execute(stmt)
+                self._apply_column_migrations(cur)
             finally:
                 cur.close()
+
+    def _apply_column_migrations(self, cur: sqlite3.Cursor) -> None:
+        """Idempotent `ALTER TABLE ADD COLUMN` migrations.
+
+        `CREATE TABLE IF NOT EXISTS` doesn't add new columns to an existing
+        table — so anything added to the schema after the first release lands
+        here. Each migration checks the column exists before ADDing.
+        """
+        cur.execute("PRAGMA table_info(tracks)")
+        cols = {row[1] for row in cur.fetchall()}
+        if "has_video" not in cols:
+            cur.execute("ALTER TABLE tracks ADD COLUMN has_video INTEGER NOT NULL DEFAULT 0")
 
     # -------------------------------------------------------------- helpers
     def execute(self, sql: str, params: tuple | dict = ()) -> sqlite3.Cursor:
@@ -238,7 +252,8 @@ class ProviderDB:
                 if cur.fetchone() is None:
                     cur.execute(
                         "INSERT INTO tracks(track_id, title, duration_seconds, size_bytes, "
-                        "provider, source_ref, sort_order) VALUES(?,?,?,?,?,?,?)",
+                        "provider, source_ref, sort_order, has_video) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
                         (
                             t["track_id"],
                             t["title"],
@@ -247,18 +262,20 @@ class ProviderDB:
                             t["provider"],
                             t["source_ref"],
                             float(t["sort_order"]),
+                            1 if t.get("has_video") else 0,
                         ),
                     )
                     added += 1
                 else:
                     cur.execute(
-                        "UPDATE tracks SET title=?, duration_seconds=?, size_bytes=?, sort_order=? "
-                        "WHERE provider=? AND source_ref=?",
+                        "UPDATE tracks SET title=?, duration_seconds=?, size_bytes=?, "
+                        "sort_order=?, has_video=? WHERE provider=? AND source_ref=?",
                         (
                             t["title"],
                             int(t.get("duration_seconds") or 0),
                             int(t.get("size_bytes") or 0),
                             float(t["sort_order"]),
+                            1 if t.get("has_video") else 0,
                             t["provider"],
                             t["source_ref"],
                         ),

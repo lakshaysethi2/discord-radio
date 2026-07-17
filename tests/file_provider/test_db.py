@@ -125,3 +125,78 @@ def test_cache_lifecycle(db: ProviderDB, tmp_path) -> None:
     assert db.cache_total_bytes() == 100
     db.forget_cache("fake_a")
     assert db.cache_entry("fake_a") is None
+
+
+# ------------------------------------------------------------- has_video column
+def test_has_video_column_default_false(db: ProviderDB) -> None:
+    _insert(db, ["a"])
+    row = db.fetchone("SELECT has_video FROM tracks WHERE source_ref='a'")
+    assert row["has_video"] == 0
+
+
+def test_has_video_column_persists(db: ProviderDB) -> None:
+    db.upsert_tracks(
+        [
+            {
+                "track_id": "fake_v",
+                "title": "video",
+                "duration_seconds": 10,
+                "size_bytes": 100,
+                "provider": "fake",
+                "source_ref": "v",
+                "sort_order": 0.0,
+                "has_video": True,
+            }
+        ]
+    )
+    row = db.fetchone("SELECT has_video FROM tracks WHERE source_ref='v'")
+    assert row["has_video"] == 1
+
+
+def test_migration_adds_has_video_to_legacy_db(tmp_path) -> None:
+    """A DB created without the column should get it added on open."""
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    # Create a legacy schema WITHOUT has_video.
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE tracks (
+            track_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            duration_seconds INTEGER DEFAULT 0,
+            size_bytes INTEGER DEFAULT 0,
+            provider TEXT NOT NULL,
+            source_ref TEXT NOT NULL,
+            sort_order REAL NOT NULL,
+            added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(provider, source_ref)
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO tracks(track_id, title, provider, source_ref, sort_order) "
+        "VALUES('legacy', 'Legacy', 'p', 'x', 0)"
+    )
+    conn.commit()
+    conn.close()
+
+    # Now open with the new schema — migration must add has_video.
+    with ProviderDB(db_path) as new_db:
+        cols = new_db.fetchall("PRAGMA table_info(tracks)")
+        col_names = {row[1] for row in cols}
+        assert "has_video" in col_names
+        # Existing row survives with the default 0.
+        row = new_db.fetchone("SELECT has_video FROM tracks WHERE track_id='legacy'")
+        assert row["has_video"] == 0
+
+
+def test_migration_idempotent(tmp_path) -> None:
+    """Calling migrate() twice on an already-migrated DB must not raise."""
+    db = ProviderDB(tmp_path / "idem.db")
+    try:
+        db.migrate()  # explicit second call
+        db.migrate()  # third call
+    finally:
+        db.close()

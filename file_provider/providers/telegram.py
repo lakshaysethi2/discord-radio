@@ -3,11 +3,12 @@
 Adapted from the hawkins-tv reference (StringSession, disk cache, per-thread
 event loop). Differences vs. the reference:
 
-* We download audio for a Discord *voice* stream instead of proxying HTTP
-  video, so we always fetch the whole file to disk before returning it —
+* We download for a Discord *voice* stream instead of proxying HTTP,
+  so we always fetch the whole file to disk before returning it —
   FFmpeg will read it locally with ``-ss`` for pause/resume.
-* We accept both ``audio`` and ``document`` messages whose mime starts with
-  ``audio/`` (voice, m4a, mp3, ogg, opus, flac).
+* We accept ``audio``, ``voice`` messages, AND ``document`` messages whose
+  mime starts with ``audio/`` OR ``video/``. Video containers get their
+  video stream stripped by FFmpeg — the audio still plays.
 * We don't do the SQLite-session migration dance; on first run the operator
   authenticates interactively and the session string lands on disk.
 """
@@ -20,6 +21,7 @@ import logging
 import os
 from pathlib import Path
 
+from file_provider.media_types import is_playable_mime, is_video_mime
 from file_provider.providers.base import BaseProvider, ProviderFetchError, ProviderTrack
 
 log = logging.getLogger(__name__)
@@ -90,7 +92,7 @@ class TelegramProvider(BaseProvider):
             tracks: list[ProviderTrack] = []
             seen: set[str] = set()
             async for msg in client.iter_messages(entity, limit=None):
-                doc = self._extract_audio(msg)
+                doc = self._extract_media(msg)
                 if doc is None:
                     continue
                 source_ref = str(msg.id)
@@ -98,12 +100,17 @@ class TelegramProvider(BaseProvider):
                     continue
                 seen.add(source_ref)
                 title = self._title_for(msg, doc)
+                has_video = is_video_mime(getattr(doc, "mime_type", "") or "")
+                # `msg.video` also implies video; belt-and-braces.
+                if getattr(msg, "video", None) is not None:
+                    has_video = True
                 tracks.append(
                     ProviderTrack(
                         title=title,
                         source_ref=source_ref,
                         duration_seconds=self._duration(doc),
                         size_bytes=int(getattr(doc, "size", 0) or 0),
+                        has_video=has_video,
                     )
                 )
             # Preserve message id order (chronological, oldest last => reverse).
@@ -113,14 +120,28 @@ class TelegramProvider(BaseProvider):
             await client.disconnect()
 
     @staticmethod
-    def _extract_audio(msg):
-        doc = getattr(msg, "audio", None) or getattr(msg, "voice", None)
+    def _extract_media(msg):
+        """Return the playable document/media from `msg`, or None.
+
+        Accepts:
+          * `msg.audio` / `msg.voice` (native audio)
+          * `msg.video` (native video — audio track will be extracted by FFmpeg)
+          * `msg.document` whose mime is `audio/*` or `video/*`
+        """
+        doc = (
+            getattr(msg, "audio", None)
+            or getattr(msg, "voice", None)
+            or getattr(msg, "video", None)
+        )
         if doc is not None:
             return doc
         doc = getattr(msg, "document", None)
-        if doc is not None and (getattr(doc, "mime_type", "") or "").startswith("audio/"):
+        if doc is not None and is_playable_mime(getattr(doc, "mime_type", "") or ""):
             return doc
         return None
+
+    # Kept as a compat alias — some downstream code / tests may still call it.
+    _extract_audio = _extract_media
 
     @staticmethod
     def _title_for(msg, doc) -> str:
@@ -179,9 +200,9 @@ class TelegramProvider(BaseProvider):
             msg = await client.get_messages(entity, ids=int(source_ref))
             if not msg:
                 raise ProviderFetchError(f"message {source_ref} not found")
-            doc = self._extract_audio(msg)
+            doc = self._extract_media(msg)
             if doc is None:
-                raise ProviderFetchError(f"no audio in message {source_ref}")
+                raise ProviderFetchError(f"no playable media in message {source_ref}")
 
             partial = target_path.with_suffix(target_path.suffix + ".part")
             with open(partial, "wb") as f:

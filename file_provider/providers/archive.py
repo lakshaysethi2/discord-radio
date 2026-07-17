@@ -30,6 +30,12 @@ from pathlib import Path
 
 import httpx
 
+from file_provider.media_types import (
+    PLAYABLE_ARCHIVE_FORMATS,
+    PLAYABLE_EXTS,
+    VIDEO_ARCHIVE_FORMATS,
+    is_video_ext,
+)
 from file_provider.providers.base import BaseProvider, ProviderFetchError, ProviderTrack
 
 log = logging.getLogger(__name__)
@@ -37,25 +43,9 @@ log = logging.getLogger(__name__)
 METADATA_URL = "https://archive.org/metadata/{item_id}"
 DOWNLOAD_URL = "https://archive.org/download/{item_id}/{path}"
 
-AUDIO_FORMATS = frozenset(
-    {
-        "VBR MP3",
-        "MP3",
-        "128Kbps MP3",
-        "64Kbps MP3",
-        "Ogg Vorbis",
-        "Ogg Video",  # some items mis-tag audio
-        "FLAC",
-        "Apple Lossless Audio",
-        "Apple MPEG-4 Audio",
-        "AIFF",
-        "WAVE",
-        "Wave",
-    }
-)
-
-# Fallback: extensions we accept if the API doesn't set a helpful "format".
-AUDIO_EXTS = frozenset({".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wav", ".aac", ".aif", ".aiff"})
+# Kept for backward-compat with anything that used to import from here.
+AUDIO_FORMATS = PLAYABLE_ARCHIVE_FORMATS
+AUDIO_EXTS = PLAYABLE_EXTS
 
 
 class ArchiveOrgProvider(BaseProvider):
@@ -116,7 +106,7 @@ class ArchiveOrgProvider(BaseProvider):
         files = data.get("files") or []
         out: list[ProviderTrack] = []
         for f in files:
-            if not self._is_audio(f):
+            if not self._is_playable(f):
                 continue
             name = f.get("name") or ""
             if not name:
@@ -135,22 +125,37 @@ class ArchiveOrgProvider(BaseProvider):
                     source_ref=source_ref,
                     duration_seconds=duration,
                     size_bytes=size,
+                    has_video=self._is_video(f),
                 )
             )
         return out
 
     @staticmethod
-    def _is_audio(f: dict) -> bool:
+    def _is_playable(f: dict) -> bool:
+        """True for audio OR video containers (source=original only).
+
+        Video files with audio tracks are playable — FFmpeg strips the video
+        when streaming to Discord voice.
+        """
         # Prefer explicit "source: original" so we don't pick up derivatives
         # (spectrograms, previews, .afpk files).
         if f.get("source") != "original":
             return False
         fmt = (f.get("format") or "").strip()
-        if fmt in AUDIO_FORMATS:
+        if fmt in PLAYABLE_ARCHIVE_FORMATS:
             return True
         name = f.get("name") or ""
         _, ext = os.path.splitext(name.lower())
-        return ext in AUDIO_EXTS
+        return ext in PLAYABLE_EXTS
+
+    @staticmethod
+    def _is_video(f: dict) -> bool:
+        fmt = (f.get("format") or "").strip()
+        if fmt in VIDEO_ARCHIVE_FORMATS:
+            return True
+        name = f.get("name") or ""
+        _, ext = os.path.splitext(name.lower())
+        return is_video_ext(ext)
 
     @staticmethod
     def _title_for(name: str) -> str:

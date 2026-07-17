@@ -1,7 +1,12 @@
 """Local filesystem provider.
 
-Scans a directory recursively for audio files and serves them by hardlinking
-(or copying, if a hardlink would cross filesystems) into the cache.
+Scans a directory recursively for playable files (audio + video containers)
+and serves them by hardlinking (or copying, if a hardlink would cross
+filesystems) into the cache.
+
+Video files are accepted too — FFmpeg strips the video track when streaming
+to Discord voice (see `bot.player.default_ffmpeg_source`). We flag them with
+`has_video=True` so the dashboard can badge them.
 
 Great for dev, tests, and self-hosters who already have a media library on disk.
 """
@@ -13,11 +18,10 @@ import os
 import shutil
 from pathlib import Path
 
+from file_provider.media_types import PLAYABLE_EXTS, is_video_ext
 from file_provider.providers.base import BaseProvider, ProviderFetchError, ProviderTrack
 
 log = logging.getLogger(__name__)
-
-AUDIO_EXTS = frozenset({".mp3", ".m4a", ".opus", ".ogg", ".oga", ".flac", ".wav", ".aac"})
 
 
 class LocalProvider(BaseProvider):
@@ -37,7 +41,8 @@ class LocalProvider(BaseProvider):
         for path in sorted(self.media_root.rglob("*")):
             if not path.is_file():
                 continue
-            if path.suffix.lower() not in AUDIO_EXTS:
+            ext = path.suffix.lower()
+            if ext not in PLAYABLE_EXTS:
                 continue
             try:
                 # Guard against symlinks pointing outside the root.
@@ -54,6 +59,7 @@ class LocalProvider(BaseProvider):
                     title=path.stem,
                     source_ref=str(rel),
                     size_bytes=size,
+                    has_video=is_video_ext(ext),
                 )
             )
         return tracks

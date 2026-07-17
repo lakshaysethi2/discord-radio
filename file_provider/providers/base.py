@@ -21,12 +21,18 @@ class ProviderTrack:
     provider will use later to fetch the file (a Telegram message id, a
     filesystem path, a GDrive file id, ...). We combine (provider, source_ref)
     into a stable ``track_id``.
+
+    ``has_video`` is True for entries that live inside a video container
+    (mp4/mkv/mov/etc). FFmpeg strips the video track when streaming to
+    Discord voice — we just carry the flag so the dashboard UI can show a
+    🎥 badge next to those tracks.
     """
 
     title: str
     source_ref: str
     duration_seconds: int = 0
     size_bytes: int = 0
+    has_video: bool = False
 
     def track_id(self, provider_name: str) -> str:
         # Deterministic short id: <provider>_<sha1-16>.

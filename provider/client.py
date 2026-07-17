@@ -46,6 +46,7 @@ class TrackResponse:
     provider_used: str
     playlist_position: int
     ready: bool
+    has_video: bool = False
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> TrackResponse:
@@ -58,6 +59,7 @@ class TrackResponse:
                 provider_used=str(data.get("provider_used") or "unknown"),
                 playlist_position=int(data.get("playlist_position") or 0),
                 ready=bool(data.get("ready", True)),
+                has_video=bool(data.get("has_video", False)),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ProviderError(f"malformed track response: {data!r}") from exc

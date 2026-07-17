@@ -15,8 +15,11 @@ def media_root(tmp_path: Path) -> Path:
     (root / "a.mp3").write_bytes(b"aaa")
     (root / "nested").mkdir()
     (root / "nested" / "b.opus").write_bytes(b"bb")
-    (root / "ignored.txt").write_bytes(b"x")  # not audio
+    (root / "ignored.txt").write_bytes(b"x")  # not audio, not video
     (root / "c.flac").write_bytes(b"c")
+    # Video containers — accepted; FFmpeg strips the video track downstream.
+    (root / "lecture.mp4").write_bytes(b"mp4data")
+    (root / "nested" / "clip.mkv").write_bytes(b"mkvdata")
     return root
 
 
@@ -28,6 +31,16 @@ def test_list_tracks_recursive_and_sorted(media_root: Path) -> None:
     assert any(r.endswith("a.mp3") for r in refs)
     assert any("b.opus" in r for r in refs)
     assert not any("ignored" in r for r in refs)
+
+
+def test_video_files_included_with_has_video_flag(media_root: Path) -> None:
+    p = LocalProvider(media_root)
+    tracks = {t.source_ref: t for t in p.list_tracks()}
+    assert "lecture.mp4" in tracks
+    assert tracks["lecture.mp4"].has_video is True
+    assert tracks["a.mp3"].has_video is False
+    # Nested video file too.
+    assert any(ref.endswith("clip.mkv") for ref in tracks)
 
 
 def test_is_configured_requires_dir(tmp_path: Path) -> None:

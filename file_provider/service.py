@@ -33,6 +33,7 @@ class TrackPayload:
     provider_used: str
     playlist_position: int
     ready: bool
+    has_video: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -116,6 +117,7 @@ class Service:
                     "provider": provider.name,
                     "source_ref": t.source_ref,
                     "sort_order": float(idx),
+                    "has_video": t.has_video,
                 }
             )
         return rows
@@ -152,6 +154,11 @@ class Service:
                         provider_used=row["provider"],
                         playlist_position=(cur + i) % max(1, self.db.playlist_length()),
                         ready=cached is not None,
+                        # sqlite3.Row's __contains__ checks values, not keys —
+                        # .keys() is required. (SIM118 doesn't understand this.)
+                        has_video=bool(row["has_video"])
+                        if "has_video" in row.keys()  # noqa: SIM118
+                        else False,
                     )
                 )
             return out
@@ -213,6 +220,9 @@ class Service:
             provider_used=provider.name,
             playlist_position=self._position_of(row["track_id"]),
             ready=ready,
+            has_video=bool(row["has_video"])
+            if "has_video" in row.keys()  # noqa: SIM118  (sqlite3.Row.__contains__ checks values)
+            else False,
         )
 
     def _position_of(self, track_id: str) -> int:

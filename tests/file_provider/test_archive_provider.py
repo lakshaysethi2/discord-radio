@@ -95,19 +95,30 @@ class TestConfig:
 # ==================================================================== scan
 class TestScan:
     @respx.mock
-    def test_scan_returns_only_originals_and_audio(self, provider: ArchiveOrgProvider) -> None:
+    def test_scan_returns_originals_including_video(self, provider: ArchiveOrgProvider) -> None:
         respx.get(METADATA_URL.format(item_id=ITEM)).mock(
             return_value=httpx.Response(200, json=SAMPLE_METADATA)
         )
         tracks = provider.list_tracks()
-        names = [t.source_ref.split("::", 1)[1] for t in tracks]
-        # 4 originals: two mp3s, one nested mp3, one opus. mp4 + derivatives excluded.
-        assert set(names) == {
+        names = {t.source_ref.split("::", 1)[1] for t in tracks}
+        # 5 originals: two mp3s, one nested mp3, one opus, one mp4 (video container
+        # with audio track — FFmpeg strips the video). Derivatives excluded.
+        assert names == {
             "BTO Radio Interviews/#01 - 11_08_01 - #4193.mp3",
             "BTO Radio Interviews/#02 - 02_21_02 - #70AB.mp3",
             "Lectures/lecture-01.mp3",
             "Extras/bonus.opus",
+            "Video/lecture.mp4",
         }
+
+    @respx.mock
+    def test_video_files_flagged_has_video(self, provider: ArchiveOrgProvider) -> None:
+        respx.get(METADATA_URL.format(item_id=ITEM)).mock(
+            return_value=httpx.Response(200, json=SAMPLE_METADATA)
+        )
+        tracks = {t.source_ref.split("::", 1)[1]: t for t in provider.list_tracks()}
+        assert tracks["Video/lecture.mp4"].has_video is True
+        assert tracks["BTO Radio Interviews/#01 - 11_08_01 - #4193.mp3"].has_video is False
 
     @respx.mock
     def test_duration_parsed(self, provider: ArchiveOrgProvider) -> None:
