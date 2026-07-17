@@ -47,25 +47,46 @@ async def _resume_or_start(
     player: Player,
     provider: FileProviderClient,
     state: BotState,
+    *,
+    max_attempts: int = 20,
+    initial_backoff: float = 1.0,
+    max_backoff: float = 30.0,
 ) -> None:
-    """Kick off playback on startup (blueprint §7.1)."""
+    """Kick off playback on startup (blueprint §7.1).
+
+    Retries with exponential backoff — the file-provider container may still
+    be scanning its playlist when the bot connects.
+    """
     resume_id = state.current_track_id
     resume_at = state.playback_position_seconds
-    try:
-        if resume_id:
-            track = await provider.get_by_id(resume_id)
-            log.info("resuming %s @ %ds", track.title, resume_at)
-            if not track.ready or not track.local_path:
-                log.warning("track %s not ready — falling back to /current", resume_id)
+    backoff = initial_backoff
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if resume_id:
+                track = await provider.get_by_id(resume_id)
+                if not track.ready or not track.local_path:
+                    log.warning("track %s not ready — falling back to /current", resume_id)
+                    track = await provider.current()
+                    resume_at = 0
+                else:
+                    log.info("resuming %s @ %ds", track.title, resume_at)
+            else:
                 track = await provider.current()
-                resume_at = 0
+                log.info("starting playback: %s", track.title)
             await player.start(track, seek_seconds=resume_at)
-        else:
-            track = await provider.current()
-            log.info("starting playback: %s", track.title)
-            await player.start(track)
-    except ProviderError as exc:
-        log.error("could not start playback: %s", exc)
+            return
+        except ProviderError as exc:
+            log.warning(
+                "startup provider not ready (attempt %d/%d): %s",
+                attempt,
+                max_attempts,
+                exc,
+            )
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, max_backoff)
+
+    log.error("provider unavailable after %d attempts — bot stays idle", max_attempts)
 
 
 def _non_bot_members(channel, *, exclude_user_id: str | None = None) -> list:
