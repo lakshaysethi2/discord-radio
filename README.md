@@ -141,7 +141,7 @@ The most important ones:
 | `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` / `TELEGRAM_CHANNEL_ID` | Telegram MTProto backend |
 | `LOCAL_MEDIA_PATH`           | Directory scanned by the local provider                      |
 | `DASHBOARD_SECRET_KEY`       | Signing key for session cookies (`openssl rand -hex 32`)     |
-| `CACHE_MAX_GB`               | Cache size ceiling (LRU eviction after)                      |
+| `FILE_PROVIDER_CACHE_MAX_GB` | Global provider-managed disk quota for cache and torrent storage |
 
 ---
 

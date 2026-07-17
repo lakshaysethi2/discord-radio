@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from file_provider.cache import Cache
 from file_provider.db import ProviderDB
+from file_provider.storage import StorageQuota
 from file_provider.providers.base import BaseProvider, ProviderFetchError, ProviderTrack
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -384,13 +385,28 @@ class Service:
 def build_service(config: Config, providers: list[BaseProvider] | None = None) -> Service:
     """Wire everything together from a Config."""
     db = ProviderDB(config.db_path)
-    cache = Cache(Path(config.cache_path), db, config.cache_max_bytes)
+    cache_root = Path(config.cache_path)
+    torrent_root = Path(config.torrent_data_path)
+    quota = StorageQuota(
+        config.cache_max_bytes,
+        [
+            cache_root,
+            torrent_root,
+            Path(config.db_path),
+            torrent_root.parent / "aria2.session",
+        ],
+    )
+    cache = Cache(cache_root, db, config.cache_max_bytes, quota=quota)
     if providers is None:
-        providers = _providers_from_config(config, db)
+        providers = _providers_from_config(config, db, quota)
     return Service(db=db, cache=cache, providers=providers)
 
 
-def _providers_from_config(config: Config, db: ProviderDB | None = None) -> list[BaseProvider]:
+def _providers_from_config(
+    config: Config,
+    db: ProviderDB | None = None,
+    quota: StorageQuota | None = None,
+) -> list[BaseProvider]:
     """Instantiate providers per FILE_PROVIDER_ORDER."""
     from file_provider.providers.local import LocalProvider
 
@@ -423,6 +439,7 @@ def _providers_from_config(config: Config, db: ProviderDB | None = None) -> list
                         max_size_bytes=config.torrent_max_size_bytes,
                         max_upload_bytes=config.torrent_max_upload_bytes,
                         allowed_extensions=config.torrent_allowed_extensions,
+                        quota=quota,
                     )
                 )
             )

@@ -6,11 +6,13 @@ import pytest
 
 from file_provider.db import ProviderDB
 from file_provider.providers.torrent import TorrentProvider
+from file_provider.storage import StorageQuota
 from file_provider.torrent_client import (
     TorrentClientError,
     TorrentManager,
     TorrentSecurityError,
     TorrentSizeLimitError,
+    TorrentStorageLimitError,
     is_metadata_path,
     validate_rpc_url,
 )
@@ -147,6 +149,18 @@ def test_add_torrent_uses_aria2_signature(tmp_path: Path) -> None:
     manager = TorrentManager(db, tmp_path / "torrents", rpc=FakeRpc(tmp_path))
     manager.start()
     assert manager.add_torrent_file(b"torrent-bytes").gid == "gid-upload"
+    db.close()
+
+
+def test_global_storage_limit_pauses_new_download(tmp_path: Path) -> None:
+    db = ProviderDB(tmp_path / "provider.db")
+    root = tmp_path / "torrents"
+    quota = StorageQuota(8, [root])
+    manager = TorrentManager(db, root, rpc=FakeRpc(root), quota=quota)
+    manager.start()
+    with pytest.raises(TorrentStorageLimitError):
+        manager.add_magnet("magnet:?xt=urn:btih:abc123")
+    assert db.torrent("gid-a")["status"] == "paused"
     db.close()
 
 

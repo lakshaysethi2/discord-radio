@@ -84,6 +84,8 @@ def create_app(service: Service | None = None) -> FastAPI:
             "cursor": s.db.get_cursor(),
             "cache_bytes": s.cache.total_bytes(),
             "cache_max_bytes": s.cache.max_bytes,
+            "storage_bytes": s.cache.storage_total_bytes(),
+            "storage_max_bytes": s.cache.quota.max_bytes if s.cache.quota else s.cache.max_bytes,
             "providers": s.db.health_snapshot(),
         }
 
@@ -100,6 +102,8 @@ def create_app(service: Service | None = None) -> FastAPI:
             "torrent_count": len(manager.db.list_torrents()),
             "max_size_bytes": manager.max_size_bytes,
             "max_upload_bytes": manager.max_upload_bytes,
+            "storage_bytes": manager.quota.usage_bytes() if manager.quota else None,
+            "storage_max_bytes": manager.quota.max_bytes if manager.quota else None,
         }
 
     @app.get("/current")

@@ -11,6 +11,7 @@ The default provider order is `local,torrent`. The important settings are:
 ```dotenv
 FILE_PROVIDER_TORRENT_ENABLED=1
 FILE_PROVIDER_TORRENT_DATA_PATH=/data/torrents
+FILE_PROVIDER_CACHE_MAX_GB=10  # global provider-managed storage quota
 FILE_PROVIDER_TORRENT_RPC_PORT=6800
 FILE_PROVIDER_TORRENT_RPC_SECRET=
 ```
@@ -50,10 +51,13 @@ aria2c --enable-rpc=true --rpc-listen-all=false --rpc-listen-port=6800 \
   --save-session="$PWD/data/aria2.session"
 ```
 
-The service and aria2 are network-light but disk-heavy: aria2 can use up to
-`FILE_PROVIDER_TORRENT_MAX_SIZE_GB` per torrent, while the playback cache has
-its separate `FILE_PROVIDER_CACHE_MAX_GB` limit. Keep both directories on
-persistent storage and monitor free space.
+The service and aria2 are network-light but disk-heavy. The global
+`FILE_PROVIDER_CACHE_MAX_GB` quota covers provider-managed storage across the
+playback cache, torrent payloads, provider database, and aria2 session file.
+`FILE_PROVIDER_TORRENT_MAX_SIZE_GB` is an additional per-torrent limit. When a
+new download would exceed the global quota, the provider pauses it and leaves
+the reason visible in the dashboard. Keep both directories on persistent
+storage and monitor free space.
 
 ## Dashboard workflow
 
@@ -65,8 +69,8 @@ persistent storage and monitor free space.
    available on the Queue page; video containers are passed through FFmpeg's
    audio-only playback path.
 5. Use **Pause**, **Resume**, or **Remove** to manage the torrent. Removing a
-   torrent also removes its selected files from the radio playlist and clears
-   their playback-cache entries.
+   torrent removes its downloaded payload files, selected files from the radio
+   playlist, and their playback-cache entries.
 
 The dashboard never talks directly to aria2. It sends authenticated admin
 requests to the file-provider API, and the provider validates torrent file

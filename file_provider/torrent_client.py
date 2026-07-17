@@ -33,6 +33,7 @@ import httpx
 from file_provider.db import ProviderDB
 from file_provider.media_types import PLAYABLE_EXTS
 from file_provider.providers.base import ProviderFetchError
+from file_provider.storage import StorageQuota
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +51,11 @@ class TorrentSecurityError(TorrentClientError):
 
 
 class TorrentSizeLimitError(TorrentClientError):
-    """A torrent exceeds the configured aggregate download size limit."""
+    """A torrent exceeds the configured per-torrent size limit."""
+
+
+class TorrentStorageLimitError(TorrentClientError):
+    """A torrent would exceed the provider's global storage budget."""
 
 
 def is_metadata_path(path: str) -> bool:
@@ -209,6 +214,7 @@ class TorrentManager:
         max_size_bytes: int = 10 * 1024**3,
         max_upload_bytes: int = 16 * 1024**2,
         allowed_extensions: frozenset[str] | None = None,
+        quota: StorageQuota | None = None,
         rpc: RpcClient | None = None,
         process_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
     ) -> None:
@@ -221,6 +227,7 @@ class TorrentManager:
         self.max_size_bytes = max(0, int(max_size_bytes))
         self.max_upload_bytes = max(1, int(max_upload_bytes))
         self.allowed_extensions = PLAYABLE_EXTS if allowed_extensions is None else allowed_extensions
+        self.quota = quota
         self.rpc_port = int(rpc_port)
         self.binary = binary
         self.rpc: RpcClient = rpc or Aria2RpcClient(rpc_url, secret=rpc_secret)
@@ -403,6 +410,28 @@ class TorrentManager:
             "files": files,
         }
 
+    @staticmethod
+    def _remaining_download_bytes(
+        raw_files: list[dict[str, Any]], status: dict[str, Any]
+    ) -> int:
+        """Estimate bytes aria2 may still write for the selected files."""
+        remaining = 0
+        known_file = False
+        for item in raw_files:
+            if not isinstance(item, dict):
+                continue
+            length = TorrentManager._int(item.get("length"))
+            done = TorrentManager._int(item.get("completedLength"))
+            if length <= 0:
+                continue
+            known_file = True
+            selected = str(item.get("selected", "true")).lower() == "true"
+            if selected:
+                remaining += max(0, length - done)
+        if known_file:
+            return remaining
+        return max(0, int(status["total_length"]) - int(status["completed_length"]))
+
     def sync_torrent(self, gid: str) -> Torrent:
         self._require_ready()
         try:
@@ -440,6 +469,23 @@ class TorrentManager:
                 f"torrent is {status['total_length']} bytes, exceeding the "
                 f"configured limit of {self.max_size_bytes} bytes"
             )
+        storage_error: str | None = None
+        remaining = self._remaining_download_bytes(raw_files, status)
+        if (
+            self.quota is not None
+            and remaining > 0
+            and status["status"] in {"active", "waiting", "paused"}
+            and not self.quota.allows(remaining)
+        ):
+            storage_error = (
+                "global provider storage quota would be exceeded; remaining download "
+                f"requires {remaining} bytes but only {self.quota.free_bytes()} bytes remain"
+            )
+            status["status"] = "paused"
+            status["error_code"] = "storage_quota"
+            status["error_message"] = storage_error
+            with contextlib.suppress(TorrentClientError):
+                self.rpc.call("aria2.pause", [gid])
         if not status["name"] and raw_files:
             first_path = Path(str(raw_files[0].get("path") or ""))
             if not is_metadata_path(str(first_path)):
@@ -476,6 +522,8 @@ class TorrentManager:
                     ),
                 },
             )
+        if storage_error is not None:
+            raise TorrentStorageLimitError(storage_error)
         return self._torrent_from_db(gid)
 
     def _torrent_from_db(self, gid: str) -> Torrent:
@@ -536,6 +584,12 @@ class TorrentManager:
             except TorrentSizeLimitError as exc:
                 # The row and aria2 job were removed by sync_torrent.
                 log.warning("removed oversized torrent %s: %s", gid, exc)
+            except TorrentStorageLimitError as exc:
+                # Keep the paused row visible so the dashboard explains why
+                # the torrent is waiting for disk space.
+                log.warning("paused torrent %s for global storage quota: %s", gid, exc)
+                if self.db.torrent(gid) is not None:
+                    out.append(self._torrent_from_db(gid))
             except TorrentClientError as exc:
                 log.debug("could not refresh torrent %s: %s", gid, exc)
                 if self.db.torrent(gid) is not None:
@@ -591,7 +645,7 @@ class TorrentManager:
     def _sync_or_db(self, gid: str) -> Torrent:
         try:
             return self.sync_torrent(gid)
-        except TorrentSizeLimitError:
+        except (TorrentSizeLimitError, TorrentStorageLimitError):
             raise
         except TorrentClientError:
             # Metadata for a magnet is legitimately unavailable for a short
@@ -691,9 +745,43 @@ class TorrentManager:
     def remove(self, gid: str) -> list[tuple[str, str]]:
         self._require_ready()
         row = self.db.torrent(gid)
+        torrent_files = self.db.torrent_files(gid)
+        protected_paths: set[Path] = set()
+        for other in self.db.fetchall("SELECT path FROM torrent_files WHERE gid != ?", (gid,)):
+            if not other["path"]:
+                continue
+            other_path = Path(other["path"])
+            if not other_path.is_absolute():
+                other_path = self.data_root / other_path
+            protected_paths.add(other_path.resolve())
         with contextlib.suppress(TorrentClientError):
             self.rpc.call("aria2.forceRemove", [gid])
         removed = self.db.remove_torrent(gid)
+        # forceRemove stops aria2 but intentionally leaves downloaded payloads.
+        # Delete only files owned by this torrent, never paths shared with a
+        # different torrent and never anything outside the configured root.
+        root = self.data_root.resolve()
+        for file in torrent_files:
+            path = Path(file["path"])
+            if not path.is_absolute():
+                path = self.data_root / path
+            try:
+                resolved = path.resolve()
+                resolved.relative_to(root)
+            except ValueError:
+                continue
+            if resolved in protected_paths:
+                continue
+            for candidate in (resolved, Path(f"{resolved}.aria2")):
+                with contextlib.suppress(OSError):
+                    candidate.unlink()
+            parent = resolved.parent
+            while parent != root:
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
         if row and row["source"]:
             source = Path(row["source"])
             try:

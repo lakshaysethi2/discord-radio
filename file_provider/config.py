@@ -51,6 +51,8 @@ class Config:
     cache_path: str = field(
         default_factory=lambda: os.environ.get("FILE_PROVIDER_CACHE_PATH", "./cache")
     )
+    # Global provider-managed disk quota: playback cache + torrent payloads
+    # + provider metadata/session files.
     cache_max_gb: int = field(default_factory=lambda: _env_int("FILE_PROVIDER_CACHE_MAX_GB", 10))
 
     host: str = field(default_factory=lambda: os.environ.get("FILE_PROVIDER_HOST", "0.0.0.0"))
