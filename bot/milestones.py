@@ -98,13 +98,21 @@ class MilestoneAnnouncer:
 
 
 class NowPlaying:
-    """Manages the 'Now Playing' embed: delete previous, post new, save id."""
+    """Manages the 'Now Playing' embed: delete previous, post new, save id.
 
-    def __init__(self, *, client: Any, text_channel_id: int, state, db: Database) -> None:
+    ``guild_id`` scopes the "currently watching" count to this server (so each
+    server's embed shows only its own listeners). Defaults to ``""`` which
+    counts every open session globally — preserved for backward compatibility.
+    """
+
+    def __init__(
+        self, *, client: Any, text_channel_id: int, state, db: Database, guild_id: str = ""
+    ) -> None:
         self.client = client
         self.text_channel_id = text_channel_id
         self.state = state
         self.db = db
+        self.guild_id = guild_id
         self._update_task: asyncio.Task | None = None
 
     def _fmt_duration(self, seconds: int) -> str:
@@ -117,7 +125,13 @@ class NowPlaying:
         return f"{m}m {s:02d}s"
 
     def _watcher_count(self) -> int:
-        row = self.db.fetchone("SELECT COUNT(*) AS n FROM watch_sessions WHERE left_at IS NULL")
+        if self.guild_id:
+            row = self.db.fetchone(
+                "SELECT COUNT(*) AS n FROM watch_sessions WHERE left_at IS NULL AND guild_id=?",
+                (self.guild_id,),
+            )
+        else:
+            row = self.db.fetchone("SELECT COUNT(*) AS n FROM watch_sessions WHERE left_at IS NULL")
         return int(row["n"]) if row else 0
 
     async def post_or_replace(self, track) -> None:  # pragma: no cover — discord I/O

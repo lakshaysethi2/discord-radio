@@ -92,8 +92,22 @@ class Database:
             try:
                 for stmt in SCHEMA:
                     cur.execute(stmt)
+                # Backfill any columns added after a DB was first created.
+                # watch_sessions gained `guild_id` for multi-server tracking —
+                # existing rows default to '' (the "unspecified" guild).
+                self._ensure_column(cur, "watch_sessions", "guild_id", "TEXT NOT NULL DEFAULT ''")
+                # guild_channels gained `parent_id` so we can default a server's
+                # *Now Playing* posts to the voice channel's own text chat.
+                self._ensure_column(cur, "guild_channels", "parent_id", "TEXT")
             finally:
                 cur.close()
+
+    @staticmethod
+    def _ensure_column(cur: sqlite3.Cursor, table: str, column: str, definition: str) -> None:
+        """Add `column` to `table` if it isn't there yet (idempotent)."""
+        existing = {row["name"] for row in cur.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in existing:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     # -------------------------------------------------------------- primitives
     def execute(self, sql: str, params: tuple | dict = ()) -> sqlite3.Cursor:

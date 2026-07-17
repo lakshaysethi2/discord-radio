@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block title %}Servers · TV Bot{% endblock %}
+
+{% block content %}
+<h1 class="text-xl font-semibold mb-1">Server management</h1>
+<p class="text-slate-400 text-sm mb-4">
+  Choose which Discord servers the bot is allowed to speak in, and pick the
+  voice channel it joins and the text channel it posts <em>Now Playing</em> +
+  milestones to. Changes apply immediately — press <strong>Save</strong> and the
+  bot picks them up within a few seconds (joining/leaving the voice channel and
+  repointing Now Playing on the fly). No restart needed.
+</p>
+
+{% if command_flash %}
+  <div class="mb-4 rounded bg-emerald-900/40 border border-emerald-700 px-3 py-2 text-sm text-emerald-200">
+    {{ command_flash }}
+  </div>
+{% endif %}
+
+{% if not servers %}
+  <div class="rounded bg-slate-900 border border-slate-800 px-4 py-8 text-center text-slate-400">
+    The bot hasn't discovered any servers yet. Once it's invited to a server
+    and comes online, that server will appear here.
+  </div>
+{% endif %}
+
+<div class="space-y-4">
+  {% for s in servers %}
+    <form method="post" action="/servers/update" class="rounded-lg bg-slate-900 border border-slate-800 p-4">
+      <input type="hidden" name="guild_id" value="{{ s.config.guild_id }}">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <div class="font-semibold">{{ s.config.guild_name or ('Server ' ~ s.config.guild_id) }}</div>
+          <div class="text-xs text-slate-500">id {{ s.config.guild_id }}</div>
+        </div>
+        <label class="flex items-center gap-2 text-sm cursor-pointer select-none">
+          <input type="checkbox" name="enabled" value="on" {{ "checked" if s.config.enabled else "" }}
+                 class="h-4 w-4 rounded border-slate-600 bg-slate-800">
+          <span>Allow bot to speak here</span>
+        </label>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label class="text-sm">
+          <span class="block text-slate-400 mb-1">Voice channel (join)</span>
+          <select name="voice_channel_id"
+                  class="w-full rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-slate-100">
+            <option value="">— none —</option>
+            {% for ch in s.voice_channels %}
+              <option value="{{ ch.channel_id }}"
+                      {{ "selected" if ch.channel_id == s.config.voice_channel_id else "" }}>
+                {{ ch.channel_name }}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="text-sm">
+          <span class="block text-slate-400 mb-1">Text channel (updates)</span>
+          <select name="text_channel_id"
+                  class="w-full rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-slate-100">
+            <option value="">— none —</option>
+            {% for ch in s.text_channels %}
+              <option value="{{ ch.channel_id }}"
+                      {{ "selected" if ch.channel_id == s.config.text_channel_id else "" }}>
+                {{ ch.channel_name }}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+
+      <div class="mt-3 text-right">
+        <button type="submit"
+                class="rounded bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 text-sm font-medium">
+          Save
+        </button>
+      </div>
+    </form>
+  {% endfor %}
+</div>
+{% endblock %}

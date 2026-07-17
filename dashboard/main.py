@@ -7,6 +7,8 @@ Routes:
     GET  /dashboard                 → now playing + watchers + controls
     GET  /leaderboard?period=…      → ranked totals
     GET  /queue                     → upcoming tracks (via file provider)
+    GET  /servers                   → multi-guild management (enable/voice/text)
+    POST /servers/update            → persist admin's per-server choices
     POST /controls                  → single POST handler (form field `action`)
     GET  /logout                    → clear session
 
@@ -38,6 +40,7 @@ from fastapi.templating import Jinja2Templates
 
 from dashboard import auth, commands, queries
 from dashboard.config import DashboardConfig, load
+from db import guilds as guilds_db
 from db.database import Database
 from db.models import BotStateKey
 from provider.client import FileProviderClient
@@ -332,6 +335,97 @@ def create_app(
             "leaderboard.html",
             {"user": user, "period": period, "rows": rows},
         )
+
+    # ---- Server (multi-guild) management ----
+    @app.get("/servers", response_class=HTMLResponse)
+    async def servers_page(
+        request: Request, user: auth.SessionUser = Depends(_require_admin)
+    ) -> HTMLResponse:
+        db = app.state.db
+        configs = guilds_db.get_guild_configs(db)
+        servers: list[dict[str, Any]] = []
+        for cfg in configs:
+            channels = guilds_db.get_guild_channels(db, cfg.guild_id)
+            servers.append(
+                {
+                    "config": cfg,
+                    "voice_channels": [c for c in channels if c.channel_type == "voice"],
+                    "text_channels": [c for c in channels if c.channel_type == "text"],
+                }
+            )
+        sess = _get_session(request) or {}
+        return _render(
+            request,
+            "servers.html",
+            {
+                "user": user,
+                "servers": servers,
+                "csrf": sess.get("csrf", ""),
+                "command_flash": request.query_params.get("flash"),
+            },
+        )
+
+    @app.post("/servers/update")
+    async def servers_update(
+        request: Request,
+        guild_id: str = Form(...),
+        enabled: str = Form("off"),
+        voice_channel_id: str = Form(""),
+        text_channel_id: str = Form(""),
+        csrf: str = Form(""),
+        user: auth.SessionUser = Depends(_require_admin),
+    ) -> Response:
+        sess = _get_session(request) or {}
+        if not sess.get("csrf") or not hmac.compare_digest(sess["csrf"], csrf):
+            raise HTTPException(status_code=403, detail="invalid CSRF token")
+
+        db = app.state.db
+        # Only allow saving config for a guild we have actually discovered, so
+        # a forged form can't point the bot at an arbitrary server/channel.
+        cfg = guilds_db.get_guild_config(db, guild_id)
+        if cfg is None:
+            raise HTTPException(status_code=400, detail="unknown guild")
+
+        # Constrain each chosen channel id to channels we discovered for this
+        # guild *of the correct type* — never trust raw form values, and don't
+        # let a text channel be saved as the voice channel (or vice versa).
+        channels = guilds_db.get_guild_channels(db, guild_id)
+        voice_ids = {ch.channel_id for ch in channels if ch.channel_type == "voice"}
+        text_ids = {ch.channel_id for ch in channels if ch.channel_type == "text"}
+        vcid = voice_channel_id if voice_channel_id in voice_ids else None
+        tcid = text_channel_id if text_channel_id in text_ids else None
+        if tcid is None:
+            # Default the *Now Playing* posts to the voice channel's own text
+            # chat (Discord nests a text channel under the voice channel when
+            # "text chat in voice" is on) when the admin didn't pick one.
+            tcid = guilds_db.get_associated_text_channel(db, guild_id, vcid)
+
+        wants_enabled = enabled == "on"
+        if wants_enabled and (vcid is None or tcid is None):
+            # Refuse to persist a config that looks enabled but cannot start.
+            raise HTTPException(
+                status_code=400,
+                detail="enable requires one valid voice channel and one valid text channel",
+            )
+
+        guilds_db.apply_guild_config(
+            db,
+            guild_id,
+            enabled=wants_enabled,
+            voice_channel_id=vcid,
+            text_channel_id=tcid,
+        )
+
+        # Push the change to the bot right away so the admin doesn't have to
+        # restart it. The bot polls this queue and live-applies the config
+        # (joins/leaves the voice channel, repoints Now Playing, etc.).
+        commands.enqueue(
+            db,
+            command="apply_server",
+            requested_by=user.user_id,
+            payload={"guild_id": guild_id},
+        )
+        return RedirectResponse("/servers?flash=Server+settings+saved+and+applied", status_code=303)
 
     @app.get("/queue", response_class=HTMLResponse)
     async def queue_page(

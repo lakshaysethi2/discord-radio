@@ -23,8 +23,19 @@ from db.database import Database
 # Commands + their payload shape:
 #   skip / pause / resume / refresh_playlist  -> no payload
 #   play_track {"track_id": "<id>"}          -> jump cursor & play immediately
+#   set_volume {"volume_percent": <int>}      -> global volume
+#   apply_server {"guild_id": "<id>"}        -> live-apply a dashboard server
+#                                               save (connect/disconnect/re-point)
 VALID_COMMANDS = frozenset(
-    {"skip", "pause", "resume", "refresh_playlist", "play_track", "set_volume"}
+    {
+        "skip",
+        "pause",
+        "resume",
+        "refresh_playlist",
+        "play_track",
+        "set_volume",
+        "apply_server",
+    }
 )
 
 

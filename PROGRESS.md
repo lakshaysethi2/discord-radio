@@ -1,20 +1,23 @@
 # PROGRESS.md — snapshot for a fresh session
 
-Last updated: **iteration 21** — fixed SQLite connection concurrency / cursor corruption bugs, added live debounced watcher count edits to the Now Playing embed, and expanded tests.
+Last updated: **iteration 23** — multi-server dashboard saves now apply **live** (no bot restart):
+the bot now serves many Discord servers from one process (shared radio, per-server
+voice/text/embeds/milestones), admins manage it from the dashboard **Servers**
+page, and the legacy single-guild env vars became an optional one-time bootstrap.
 
 ## Test scoreboard
-- **285 tests passing** (0 failing, 0 skipped)
+- **371 tests passing** (0 failing, 0 skipped)
 - `ruff check .` clean · `ruff format --check .` clean
 - `make test`, `make lint`, `make help` all work
 
 ## Test breakdown
 | Path                            | Tests | Focus                                                              |
 |---------------------------------|-------|--------------------------------------------------------------------|
-| tests/bot                       | 110   | player (state machine, seq race, not-ready guards), tracker, milestones (checker + announcer + now playing), scheduler + drain, config, presence, main helpers (startup retry) |
-| tests/dashboard                 | 63    | OAuth flow, session signing, queries, control queue, all routes    |
-| tests/db                        | 16    | schema, migrations, bot_state kv, WAL                              |
-| tests/file_provider             | 51    | ProviderDB, LRU cache, LocalProvider, service + concurrency        |
-| tests/provider                  | 19    | HTTP client contract, retry, error paths                           |
+| tests/bot                       | 140   | player (state machine, seq race, not-ready guards), tracker, milestones (checker + announcer + now playing), scheduler + drain, config, presence, main helpers (startup retry), live server-apply reconcile |
+| tests/dashboard                 | 80    | OAuth flow, session signing, queries, control queue, all routes    |
+| tests/db                        | 29    | schema, migrations, bot_state kv, WAL, guild config + channels     |
+| tests/file_provider             | 90    | ProviderDB, LRU cache, LocalProvider, service + concurrency        |
+| tests/provider                  | 20    | HTTP client contract, retry, error paths                           |
 | tests/test_integration.py       | 9     | bot HTTP client ↔ real file-provider ASGI app                      |
 | tests/test_control_plane.py     | 3     | dashboard POST /controls → SQLite queue → bot scheduler → fake player |
 
@@ -67,7 +70,7 @@ Last updated: **iteration 21** — fixed SQLite connection concurrency / cursor 
 5. Put Cloudflare / nginx in front of dashboard on :8000 (HTTPS terminator; `--proxy-headers` already set).
 
 ## How to resume in a fresh session
-1. `git status` — should be clean on `arena/019f6df3-discord-radio`.
+1. `git status` — should be clean on `arena/019f6f2f-discord-radio`.
 2. `make build` — builds all Docker images.
 3. `make test` — runs the 263 tests inside a container.
 4. `make lint` — ruff check + format check inside a container.
@@ -79,3 +82,113 @@ Last updated: **iteration 21** — fixed SQLite connection concurrency / cursor 
 - File-provider adds metadata-only `GET /tracks` and fetch-on-select `POST /jump/{track_id}`. The bot consumes `play_track` through the shared SQLite command queue.
 - Review fix: dashboard obtains active-track state from its shared bot SQLite DB rather than provider `/current`, so merely browsing the playlist never downloads uncached media.
 - Verification in this sandbox (Docker unavailable): `.venv/bin/python -m pytest -q` → **313 passed**; `ruff check .` clean; `ruff format --check .` clean.
+
+## Multi-server delivery — 2026-07-17
+- The bot is no longer hard-coded to one guild. On `on_ready` it discovers
+  every server it belongs to, caches their channels into `guild_channels`, and
+  joins each *enabled* server that has both a voice + text channel selected in
+  `guild_configs`.
+- One shared playback cursor drives all servers (the "radio"); each server gets
+  its own `Station` (voice connection, `NowPlaying` embed, `MilestoneAnnouncer`).
+  Sessions are tracked per `guild_id`; `GuildScopedState` keeps each server's
+  Now Playing embed isolated.
+- Dashboard **Servers** page (`/servers`) lets admins toggle a server on/off and
+  pick its voice + text channels; the save is CSRF-protected and only ever
+  stores channel ids the bot actually discovered for that server.
+- Legacy `DISCORD_GUILD_ID` / `DISCORD_VOICE_CHANNEL_ID` / `DISCORD_TEXT_CHANNEL_ID`
+  are now an optional one-time bootstrap (seeded as enabled on first boot), then
+  the dashboard owns the config.
+- New tests: `tests/db/test_guilds.py`, `tests/db/test_guild_tables.py`,
+  `tests/bot/test_tracker_guild.py`, `tests/bot/test_guild_scoped_state.py`,
+  `tests/bot/test_scheduler_guild.py`, `tests/dashboard/test_servers.py`.
+- The *Text channel (updates)* now defaults to the voice channel's own text
+  chat (Discord nests a `GUILD_TEXT` channel under the voice channel when
+  "text chat in voice" is on) when an admin doesn't pick one. Discovery stores
+  each channel's `parent_id`; `get_associated_text_channel()` resolves it, used
+  by both the dashboard save and the legacy env bootstrap.
+- Verification: `.venv/bin/python -m pytest -q` → **347 passed**; `ruff check .`
+  clean; `ruff format --check .` clean.
+
+## Review fixes (PR #4) — 2026-07-17
+Addressed the three items raised in code review:
+- **Shared-cursor correctness (High):** added `RadioClock`, the single
+  authoritative playback clock, decoupled from any `Player`'s per-voice-client
+  clock. Stations now join/resume at `radio.position()` so every server hears
+  the same track at the same offset; the global position is only persisted by
+  the orchestrator on play/pause transitions. `Player` no longer writes the
+  global position/is_paused when `persist_pause_state=False` (so an idle
+  server can't corrupt the cursor). New tests in `tests/bot/test_radio_clock.py`
+  cover the "Guild A has played N seconds → Guild B joins at ~N seconds" case.
+- **Checkpoint crash (High):** `sqlite3.Row` has no `.get()`; the scheduler's
+  checkpoint loop now indexes `row["guild_id"]` and the loop body was
+  extracted to `Scheduler._announce_open_sessions()` (covered by a real-`Row`
+  test in `tests/bot/test_scheduler_guild.py`).
+- **Channel-type validation (Medium):** `/servers/update` now validates the
+  voice id against *voice* channels and the text id against *text* channels
+  (not a combined set), and refuses to persist an `enabled` config that lacks
+  one valid voice + one valid text channel (HTTP 400). Tests updated in
+  `tests/dashboard/test_servers.py`.
+
+Verification after fixes: `.venv/bin/python -m pytest -q` → **354 passed**;
+`ruff check .` clean; `ruff format --check .` clean.
+
+## Manual-pause regression fix (2nd review pass) — 2026-07-17
+The second review pass found one remaining regression: the dashboard **pause**
+command stopped every station player but never froze the authoritative
+`RadioClock`, so the shared clock kept advancing while "paused". A later
+**resume** then re-joined all stations at the wall-clock position — silently
+skipping the paused interval.
+- Introduced an in-memory `admin_paused` flag (independent of listener count)
+  and a single `sync_radio_state()` routine that is now the one place the
+  shared radio is frozen/resumed: the radio plays only when
+  `has_listeners and not admin_paused`. `pause` sets `admin_paused=True` and
+  freezes the clock; `resume` clears it and restarts the clock from the frozen
+  offset before re-joining each live station at `radio.position()`. Voice-state
+  changes call the same routine (without clearing the manual-pause flag), and
+  the `JOINED` resume is gated on `not admin_paused` so an admin pause keeps
+  every server silent until explicitly resumed. `play_track` also clears the
+  manual pause (playing a chosen track is an explicit play intent).
+- Regression test `tests/bot/test_radio_clock.py::
+  test_dashboard_pause_freezes_clock_and_resume_keeps_position` reproduces the
+  exact scenario (radio at 30s → admin pause → 5 min wall-clock passes → admin
+  resume) and asserts the resumed seek is 30s, not 330s.
+- Same review pass also flagged that `play_track` started the `RadioClock`
+  unconditionally — so with zero listeners the clock advanced in the background
+  and a later joiner landed mid-track. Added `RadioClock.reset(offset=0)` (a
+  frozen base offset, no clock start) and made `play_track` reconcile via
+  `sync_radio_state()`, so the cursor stays frozen at 0 until a listener joins.
+  Regression test `test_play_track_with_no_listeners_freezes_clock_at_zero`
+  asserts the first joiner starts at 0, not 600s in.
+
+Verification: `.venv/bin/python -m pytest -q` → **357 passed**;
+`ruff check .` clean; `ruff format --check .` clean.
+
+## Live server-apply (no bot restart) — 2026-07-17
+The dashboard **Servers** save previously only wrote `guild_configs`; the bot
+read it once on `on_ready`, so a change needed a full restart. That's gone:
+- `dashboard/commands.py`: added `apply_server` to the control-plane
+  whitelist (`payload = {"guild_id": ...}`).
+- `dashboard/main.py` `/servers/update`: after persisting the config it now
+  enqueues an `apply_server` command, so the bot applies the change within the
+  ~2s command-poll interval. The save flash reads "Server settings saved and
+  applied".
+- `bot/main.py`: added `apply_server_config()` — an idempotent reconcile that
+  diffs a guild's live `Station` against its current `guild_configs` row and:
+  * disabled / incomplete config → tears the live station down (disconnect);
+  * voice channel changed → rebuilds the station from scratch (reconnect);
+  * only the *Now Playing* text channel changed → repoints the announcers in
+    place (no voice reconnect);
+  * already matching → no-op.
+  The station build/teardown I/O was extracted from `on_ready` into reusable
+  `_build_station` / `_teardown_station` closures so startup and live-apply
+  share one code path. The `apply_server` command handler also calls
+  `sync_radio_state()` afterwards so the shared clock stays correct (e.g. a
+  disable on the only live server freezes the clock).
+- `docs/multi-server.md` + `servers.html` updated: changes apply immediately,
+  no restart.
+- New tests: `tests/bot/test_apply_server.py` (reconcile matrix with fakes) and
+  `tests/dashboard/test_servers.py::test_save_enqueues_apply_server_command` /
+  `::test_disable_enqueues_apply_server_command`.
+
+Verification: `.venv/bin/python -m pytest -q` → **371 passed**;
+`ruff check .` clean; `ruff format --check .` clean.

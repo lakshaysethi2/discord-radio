@@ -65,15 +65,23 @@ class SessionTracker:
         server_nickname: str | None,
         track_id: str | None,
         now: datetime | None = None,
+        guild_id: str = "",
     ) -> int:
-        """Create a new open watch_session row. Returns session_id."""
+        """Create a new open watch_session row. Returns session_id.
+
+        ``guild_id`` scopes the session to a particular Discord server so two
+        servers can credit the same person independently and report their own
+        watcher counts. It defaults to ``""`` (legacy / unspecified) so
+        single-guild callers don't have to change.
+        """
         joined_at = _iso(now or _now_utc())
         # If the user already has an open session (double-join weirdness),
         # close the stale one at duration 0 first so we never have two rows
-        # with left_at NULL for the same user.
+        # with left_at NULL for the same (user, guild).
         stale = self.db.fetchone(
-            "SELECT session_id FROM watch_sessions WHERE user_id=? AND left_at IS NULL",
-            (user_id,),
+            "SELECT session_id FROM watch_sessions "
+            "WHERE user_id=? AND left_at IS NULL AND guild_id=?",
+            (user_id, guild_id),
         )
         if stale is not None:
             self.db.execute(
@@ -81,17 +89,20 @@ class SessionTracker:
                 "WHERE session_id=?",
                 (joined_at, stale["session_id"]),
             )
-            log.warning("closed stale open session for user %s", user_id)
+            log.warning("closed stale open session for user %s (guild %s)", user_id, guild_id)
 
         cur = self.db.execute(
-            "INSERT INTO watch_sessions(user_id, username, server_nickname, track_id, joined_at) "
-            "VALUES(?,?,?,?,?)",
-            (user_id, username, server_nickname, track_id, joined_at),
+            "INSERT INTO watch_sessions"
+            "(user_id, username, server_nickname, track_id, joined_at, guild_id) "
+            "VALUES(?,?,?,?,?,?)",
+            (user_id, username, server_nickname, track_id, joined_at, guild_id),
         )
         return int(cur.lastrowid)
 
-    def close_session(self, *, user_id: str, now: datetime | None = None) -> ClosedSession | None:
-        """Close the (single) open session for `user_id`.
+    def close_session(
+        self, *, user_id: str, now: datetime | None = None, guild_id: str = ""
+    ) -> ClosedSession | None:
+        """Close the (single) open session for `user_id` in `guild_id`.
 
         Returns None if there was no open session (e.g. bot was down when they
         joined) or if the session is shorter than MIN_SESSION_SECONDS (in
@@ -99,9 +110,9 @@ class SessionTracker:
         """
         end = now or _now_utc()
         row = self.db.fetchone(
-            "SELECT * FROM watch_sessions WHERE user_id=? AND left_at IS NULL "
+            "SELECT * FROM watch_sessions WHERE user_id=? AND left_at IS NULL AND guild_id=? "
             "ORDER BY session_id DESC LIMIT 1",
-            (user_id,),
+            (user_id, guild_id),
         )
         if row is None:
             return None
