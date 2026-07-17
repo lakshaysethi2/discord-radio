@@ -84,3 +84,91 @@ class TestDrainCommands:
         row = commands.recent(db)[0]
         assert row.result is not None
         assert "timed out" in row.result
+
+
+class TestApplyServerFromIdle:
+    """Regression: an idle bot (zero live stations) must still process the
+    `apply_server` command and build its first station. A naive early
+    `if not stations: return` guard would bounce the command before it could
+    create a station — so saving in the dashboard never made the bot join.
+    """
+
+    class _FakeChannel:
+        def __init__(self, tid: int) -> None:
+            self.text_channel_id = tid
+
+    class _FakeStation:
+        def __init__(self, gid: str, vid: str, tid: str) -> None:
+            self.guild_id = gid
+            self.voice_channel_id = vid
+            self.text_channel_id = tid
+            self.now_playing = TestApplyServerFromIdle._FakeChannel(int(tid))
+            self.milestones = TestApplyServerFromIdle._FakeChannel(int(tid))
+
+    async def test_apply_server_builds_first_station_from_empty(self, db: Database) -> None:
+        from bot.main import apply_server_config
+        from db import guilds as guilds_db
+
+        # Seed an enabled config + matching channel ids, just like the
+        # dashboard save would have written.
+        guilds_db.discover_guild(db, "1", "Server One")
+        guilds_db.apply_guild_config(
+            db, "1", enabled=True, voice_channel_id="100", text_channel_id="200"
+        )
+
+        stations: dict[str, object] = {}
+        announcers: dict[str, object] = {}
+        built: list[tuple[object, object]] = []
+
+        class _FakeGuild:
+            def __init__(self, gid: str) -> None:
+                self.id = int(gid)
+
+            def get_channel(self, _cid):  # pragma: no cover — unused on apply path
+                return object()
+
+        async def build_station(guild, cfg):
+            built.append((guild, cfg))
+            return TestApplyServerFromIdle._FakeStation(
+                cfg.guild_id, cfg.voice_channel_id, cfg.text_channel_id
+            )
+
+        async def teardown_station(station):  # pragma: no cover — not invoked here
+            pass
+
+        class _Client:
+            def get_guild(self, gid: int):
+                return _FakeGuild("1")
+
+        # Mirror the real handler's ordering: apply_server runs *before* any
+        # "no stations" guard, so it can create the first station.
+        async def handler(command: str, payload: dict | None) -> str:
+            if command == "apply_server":
+                gid = (payload or {}).get("guild_id")
+                if not gid:
+                    return "error: apply_server requires payload {guild_id}"
+                return await apply_server_config(
+                    db=db,
+                    client=_Client(),
+                    stations=stations,
+                    per_guild_announcers=announcers,
+                    build_station=build_station,
+                    teardown_station=teardown_station,
+                    guild_id=gid,
+                )
+            return "ok"
+
+        scheduler = Scheduler(db=db, tracker=SessionTracker(db), command_handler=handler)
+
+        # Bot is idle: no stations yet.
+        assert stations == {}
+
+        commands.enqueue(db, command="apply_server", requested_by="42", payload={"guild_id": "1"})
+        n = await scheduler.drain_commands()
+
+        assert n == 1
+        assert built, "apply_server should have invoked build_station"
+        assert "1" in stations, "first station must be registered"
+        # Consumed + marked done.
+        assert commands.pending(db) == []
+        assert commands.recent(db, limit=1)[0].result == "ok:applied"

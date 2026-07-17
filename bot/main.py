@@ -263,6 +263,7 @@ async def apply_server_config(
             return "error: voice connect failed"
         stations[guild_id] = station
         per_guild_announcers[guild_id] = station.milestones
+        log.info("guild %s enabled — live station built and joined", guild_id)
 
     return "ok:applied"
 
@@ -386,6 +387,30 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
         that currently has listeners.
         """
         nonlocal admin_paused
+        # `apply_server` is the one command whose whole job is to *create*
+        # stations, so it must run even when `stations` is empty (e.g. right
+        # after a fresh, idle startup). Handle it before the "no servers"
+        # guard below, otherwise a brand-new idle bot could never be enabled
+        # from the dashboard without a restart.
+        if command == "apply_server":
+            # Dashboard pushed a new/changed server config — apply it live so
+            # the admin doesn't have to restart the bot.
+            gid = (payload or {}).get("guild_id")
+            if not gid:
+                return "error: apply_server requires payload {guild_id}"
+            result = await apply_server_config(
+                db=db,
+                client=client,
+                stations=stations,
+                per_guild_announcers=per_guild_announcers,
+                build_station=_build_station,
+                teardown_station=_teardown_station,
+                guild_id=gid,
+            )
+            # Keep the shared radio cursor in step with the new station set
+            # (e.g. a disable should freeze the clock if it was the only one).
+            sync_radio_state(stations, radio, state, admin_paused=admin_paused)
+            return result
         if not stations:
             return "error: no servers configured"
         if command == "skip":
@@ -458,25 +483,6 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 return f"ok:{r.status_code}"
             except Exception as exc:
                 return f"error: {exc}"
-        if command == "apply_server":
-            # Dashboard pushed a new/changed server config — apply it live so
-            # the admin doesn't have to restart the bot.
-            gid = (payload or {}).get("guild_id")
-            if not gid:
-                return "error: apply_server requires payload {guild_id}"
-            result = await apply_server_config(
-                db=db,
-                client=client,
-                stations=stations,
-                per_guild_announcers=per_guild_announcers,
-                build_station=_build_station,
-                teardown_station=_teardown_station,
-                guild_id=gid,
-            )
-            # Keep the shared radio cursor in step with the new station set
-            # (e.g. a disable should freeze the clock if it was the only one).
-            sync_radio_state(stations, radio, state, admin_paused=admin_paused)
-            return result
         return f"error: unknown command {command!r}"
 
     async def _build_station(guild, cfg) -> Station | None:
@@ -618,9 +624,15 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 log.error("giving up on advancing after 10 attempts — bot will be silent")
                 return
 
-            # The cursor moved to a new track starting at offset 0.
-            radio.start(0)
+            # The cursor moved to a new track starting at offset 0. Don't
+            # unconditionally start the clock — if this on_finish fired in the
+            # same instant the last listener left, ticking would advance the
+            # shared radio in the background with nobody listening. Park at 0
+            # and let sync_radio_state() decide whether playback should run
+            # (same pattern as play_track).
+            radio.reset(0)
             state.playback_position_seconds = 0
+            sync_radio_state(stations, radio, state, admin_paused=admin_paused)
             for st in stations.values():
                 try:
                     if st.listener_count > 0:
