@@ -1,9 +1,12 @@
 # PROGRESS.md — snapshot for a fresh session
 
-Last updated: **iteration 21** — fixed SQLite connection concurrency / cursor corruption bugs, added live debounced watcher count edits to the Now Playing embed, and expanded tests.
+Last updated: **iteration 22** — added multi-server (per-guild) management:
+the bot now serves many Discord servers from one process (shared radio, per-server
+voice/text/embeds/milestones), admins manage it from the dashboard **Servers**
+page, and the legacy single-guild env vars became an optional one-time bootstrap.
 
 ## Test scoreboard
-- **285 tests passing** (0 failing, 0 skipped)
+- **347 tests passing** (0 failing, 0 skipped)
 - `ruff check .` clean · `ruff format --check .` clean
 - `make test`, `make lint`, `make help` all work
 
@@ -79,3 +82,24 @@ Last updated: **iteration 21** — fixed SQLite connection concurrency / cursor 
 - File-provider adds metadata-only `GET /tracks` and fetch-on-select `POST /jump/{track_id}`. The bot consumes `play_track` through the shared SQLite command queue.
 - Review fix: dashboard obtains active-track state from its shared bot SQLite DB rather than provider `/current`, so merely browsing the playlist never downloads uncached media.
 - Verification in this sandbox (Docker unavailable): `.venv/bin/python -m pytest -q` → **313 passed**; `ruff check .` clean; `ruff format --check .` clean.
+
+## Multi-server delivery — 2026-07-17
+- The bot is no longer hard-coded to one guild. On `on_ready` it discovers
+  every server it belongs to, caches their channels into `guild_channels`, and
+  joins each *enabled* server that has both a voice + text channel selected in
+  `guild_configs`.
+- One shared playback cursor drives all servers (the "radio"); each server gets
+  its own `Station` (voice connection, `NowPlaying` embed, `MilestoneAnnouncer`).
+  Sessions are tracked per `guild_id`; `GuildScopedState` keeps each server's
+  Now Playing embed isolated.
+- Dashboard **Servers** page (`/servers`) lets admins toggle a server on/off and
+  pick its voice + text channels; the save is CSRF-protected and only ever
+  stores channel ids the bot actually discovered for that server.
+- Legacy `DISCORD_GUILD_ID` / `DISCORD_VOICE_CHANNEL_ID` / `DISCORD_TEXT_CHANNEL_ID`
+  are now an optional one-time bootstrap (seeded as enabled on first boot), then
+  the dashboard owns the config.
+- New tests: `tests/db/test_guilds.py`, `tests/db/test_guild_tables.py`,
+  `tests/bot/test_tracker_guild.py`, `tests/bot/test_guild_scoped_state.py`,
+  `tests/bot/test_scheduler_guild.py`, `tests/dashboard/test_servers.py`.
+- Verification: `.venv/bin/python -m pytest -q` → **347 passed**; `ruff check .`
+  clean; `ruff format --check .` clean.

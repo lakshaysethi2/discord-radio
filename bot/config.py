@@ -32,14 +32,29 @@ def _env_id_list(key: str) -> frozenset[str]:
     return frozenset(x.strip() for x in raw.split(",") if x.strip())
 
 
+def _env_int_or(key: str, default: int) -> int:
+    """Like `_env_int` but treats an *unset* var as `default` without raising.
+
+    A present-but-malformed value still raises ``ValueError`` so misconfig is
+    surfaced loudly. Used for the optional single-guild bootstrap vars.
+    """
+    raw = os.environ.get(key)
+    if raw is None or raw == "":
+        return default
+    return int(raw)
+
+
 @dataclass(slots=True, frozen=True)
 class BotConfig:
     token: str
-    guild_id: int
-    voice_channel_id: int
-    text_channel_id: int
-    file_provider_base_url: str
-    database_path: str
+    # The three guild-id vars are now *optional bootstrap* values: they seed
+    # the bot's first server on first boot, but the dashboard is the source of
+    # truth for which servers the bot speaks in (see db.guilds / §servers).
+    guild_id: int = 0
+    voice_channel_id: int = 0
+    text_channel_id: int = 0
+    file_provider_base_url: str = "http://file-provider:8001"
+    database_path: str = "./data/tv.db"
     min_session_seconds: int = 30
     checkpoint_interval_seconds: int = 3600
     admin_user_ids: frozenset[str] = field(default_factory=frozenset)
@@ -48,9 +63,9 @@ class BotConfig:
 def load() -> BotConfig:
     return BotConfig(
         token=_env("DISCORD_BOT_TOKEN", required=True),
-        guild_id=int(_env("DISCORD_GUILD_ID", required=True)),
-        voice_channel_id=int(_env("DISCORD_VOICE_CHANNEL_ID", required=True)),
-        text_channel_id=int(_env("DISCORD_TEXT_CHANNEL_ID", required=True)),
+        guild_id=_env_int_or("DISCORD_GUILD_ID", 0),
+        voice_channel_id=_env_int_or("DISCORD_VOICE_CHANNEL_ID", 0),
+        text_channel_id=_env_int_or("DISCORD_TEXT_CHANNEL_ID", 0),
         file_provider_base_url=_env("FILE_PROVIDER_BASE_URL", "http://file-provider:8001"),
         database_path=_env("DATABASE_PATH", "./data/tv.db"),
         min_session_seconds=_env_int("MIN_SESSION_SECONDS", 30),

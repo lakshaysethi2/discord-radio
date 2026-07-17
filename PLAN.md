@@ -99,6 +99,16 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] `docs/telegram-setup.md` — how to get api_id/api_hash and channel id
 - [x] `docs/dashboard-setup.md` — Discord OAuth2 app setup
 
+## Phase 13 — Multi-server (per-guild) management
+- [x] `guild_configs` + `guild_channels` tables; idempotent `guild_id` backfill on `watch_sessions`
+- [x] `db/guilds.py` — discover/seed/apply/get per-guild config + cached channels
+- [x] Bot discovers every guild + channels on `on_ready` and joins each *enabled* server (shared radio, per-server voice/text/embeds/milestones)
+- [x] `Station` abstraction; controls fan out to all listening servers; advance drives every live station
+- [x] Tracker + NowPlaying scoped by `guild_id`; `GuildScopedState` isolates per-server Now Playing embeds
+- [x] Scheduler routes milestone announcements to the correct server's announcer
+- [x] Dashboard `/servers` page + CSRF-protected save; channels constrained to discovered ids
+- [x] `docs/multi-server.md` walkthrough
+
 ---
 
 ## Nice-to-have / future

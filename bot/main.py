@@ -3,13 +3,18 @@
 Wires together config + DB + provider client + player + tracker + scheduler
 and hands control to discord.py's event loop.
 
-Boot sequence (blueprint §7.1):
+Boot sequence (blueprint §7.1, extended for multi-server §servers):
     1. Load config, open DB, open provider HTTP client.
-    2. Connect to Discord, resolve guild + voice channel + text channel.
+    2. Connect to Discord, discover every guild we belong to.
     3. Close any orphan sessions left from a previous crash.
-    4. Join voice channel.
-    5. Ask provider for `current()`; start playback at saved position.
+    4. For each *enabled* guild with valid channels: join its voice channel,
+       build a Station (player + Now Playing + milestone announcer).
+    5. Ask provider for `current()`; start playback at the saved position.
     6. Register voice_state_update handler + start scheduler tasks.
+
+The radio has ONE global playback cursor — every enabled server hears the same
+track — but each server keeps its own voice connection, Now Playing embed and
+milestone announcements.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ import asyncio
 import contextlib
 import logging
 import signal
+from dataclasses import dataclass
 
 import httpx
 
@@ -26,12 +32,35 @@ from bot.milestones import MilestoneAnnouncer, NowPlaying
 from bot.player import Player
 from bot.presence import Transition, VoiceEvent, should_pause, should_resume
 from bot.scheduler import Scheduler
-from bot.state import BotState
+from bot.state import BotState, GuildScopedState
 from bot.tracker import SessionTracker
+from db import guilds as guilds_db
 from db.database import Database
 from provider.client import FileProviderClient, ProviderError
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class Station:
+    """One Discord server the bot is actively serving.
+
+    Every enabled guild gets its own voice connection, player, Now Playing
+    embed and milestone announcer — but they all share the single global
+    playback cursor (the radio plays the same track everywhere).
+    """
+
+    guild_id: str
+    guild_name: str
+    voice_channel: object
+    voice_channel_id: int
+    text_channel_id: int | None
+    voice_client: object
+    player: Player
+    now_playing: NowPlaying
+    milestones: MilestoneAnnouncer
+    is_paused: bool = True
+    listener_count: int = 0
 
 
 def _init_logging() -> None:
@@ -105,7 +134,13 @@ def _non_bot_members(channel, *, exclude_user_id: str | None = None) -> list:
 
 
 async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — I/O heavy
-    """Main coroutine. Not covered by tests — validated by manual + Docker runs."""
+    """Main coroutine. Not covered by tests — validated by manual + Docker runs.
+
+    The bot serves every *enabled* guild discovered in ``guild_configs`` (seeded
+    from the servers it actually belongs to + the legacy env vars). Each guild
+    gets its own voice connection + Now Playing embed + milestone announcer,
+    but they all share one global playback cursor — the same radio, everywhere.
+    """
     import discord
 
     config = config or load()
@@ -126,29 +161,46 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
     client = discord.Client(intents=intents)
 
     tracker = SessionTracker(db=db, min_session_seconds=config.min_session_seconds)
-    milestones = MilestoneAnnouncer(client=client, text_channel_id=config.text_channel_id, db=db)
-    now_playing = NowPlaying(
-        client=client, text_channel_id=config.text_channel_id, state=state, db=db
-    )
-    player: Player | None = None
-    voice: object | None = None
-    text_channel = None
+
+    # Populated in on_ready; referenced by the event handlers below.
+    stations: dict[str, Station] = {}
+    per_guild_announcers: dict[str, MilestoneAnnouncer] = {}
+    _advance_lock = asyncio.Lock()
     ready_done = False  # guard against on_ready firing more than once
 
+    def _update_global_paused() -> None:
+        """The radio is 'paused' only when nobody is listening anywhere."""
+        total = sum(s.listener_count for s in stations.values())
+        state.is_paused = total == 0
+
     async def _handle_command(command: str, payload: dict | None) -> str:
-        """Called by the scheduler's command loop for each pending row."""
-        if player is None:
-            return "error: player not ready"
+        """Called by the scheduler's command loop for each pending row.
+
+        Controls act on the shared stream, so we fan them out to every station
+        that currently has listeners.
+        """
+        if not stations:
+            return "error: no servers configured"
         if command == "skip":
-            await player.skip()
+            for st in stations.values():
+                if st.listener_count > 0:
+                    await st.player.skip()
             return "ok:skipped"
         if command == "pause":
-            await player.pause()
+            for st in stations.values():
+                if st.listener_count > 0:
+                    await st.player.pause()
+                    st.is_paused = True
+            _update_global_paused()
             return "ok:paused"
         if command == "resume":
-            await player.resume()
-            if player.current_track is not None:
-                await now_playing.post_or_replace(player.current_track)
+            for st in stations.values():
+                if st.listener_count > 0:
+                    await st.player.resume()
+                    st.is_paused = False
+                    if st.player.current_track is not None:
+                        await st.now_playing.post_or_replace(st.player.current_track)
+            _update_global_paused()
             return "ok:resumed"
         if command == "set_volume":
             try:
@@ -157,7 +209,9 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 return "error: set_volume requires integer payload {volume_percent}"
             if not 50 <= volume <= 250:
                 return "error: volume must be between 50 and 250"
-            applied = await player.set_volume(volume)
+            applied = volume
+            for st in stations.values():
+                applied = await st.player.set_volume(volume)
             return f"ok:volume:{applied}"
         if command == "play_track":
             if not payload or not isinstance(payload.get("track_id"), str):
@@ -169,9 +223,11 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 return f"error: jump failed: {exc}"
             if not track.ready or not track.local_path:
                 return f"error: track {track_id} not ready"
-            await player.start(track)
-            with contextlib.suppress(Exception):
-                await now_playing.post_or_replace(track)
+            for st in stations.values():
+                if st.listener_count > 0:
+                    await st.player.start(track)
+                with contextlib.suppress(Exception):
+                    await st.now_playing.post_or_replace(track)
             return f"ok:playing:{track_id}"
         if command == "refresh_playlist":
             # File-provider owns playlists — ask it to rescan.
@@ -186,40 +242,56 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
     scheduler = Scheduler(
         db=db,
         tracker=tracker,
-        milestones=milestones,
+        per_guild_announcers=per_guild_announcers,
         checkpoint_interval_seconds=config.checkpoint_interval_seconds,
         command_handler=_handle_command,
     )
 
     async def _advance_and_announce(_player: Player, finished_track) -> None:
-        """on_finish: mark played, ask for next, start it, repost embed.
+        """on_finish: mark played, ask for next, start it on every live station.
 
-        Retries with backoff on provider failure — the alternative is the bot
-        going silent forever after one transient error.
+        The radio has one cursor, so the first station to finish a track drives
+        the global advance and the others get cut to the new track (kept in
+        sync). The lock + cursor check prevent a double advance when several
+        stations finish the same track within the same instant.
         """
-        # Best-effort: mark_played is non-critical.
-        with contextlib.suppress(Exception):
-            await provider.mark_played(finished_track.track_id)
-
-        backoff = 1.0
-        for attempt in range(1, 11):
-            try:
-                nxt = await provider.next()
-                if not nxt.ready or not nxt.local_path:
-                    raise RuntimeError(f"track {nxt.track_id} not ready")
-                await _player.start(nxt)
-                with contextlib.suppress(Exception):
-                    await now_playing.post_or_replace(nxt)
+        async with _advance_lock:
+            # Another server may have already advanced past this track.
+            if state.current_track_id != finished_track.track_id:
                 return
-            except Exception as exc:
-                log.warning("advance attempt %d failed: %s", attempt, exc)
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 60.0)
-        log.error("giving up on advancing after 10 attempts — bot will be silent")
+
+            # Best-effort: mark_played is non-critical.
+            with contextlib.suppress(Exception):
+                await provider.mark_played(finished_track.track_id)
+
+            backoff = 1.0
+            nxt = None
+            for attempt in range(1, 11):
+                try:
+                    cand = await provider.next()
+                    if not cand.ready or not cand.local_path:
+                        raise RuntimeError(f"track {cand.track_id} not ready")
+                    nxt = cand
+                    break
+                except Exception as exc:
+                    log.warning("advance attempt %d failed: %s", attempt, exc)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 60.0)
+            if nxt is None:
+                log.error("giving up on advancing after 10 attempts — bot will be silent")
+                return
+
+            for st in stations.values():
+                try:
+                    if st.listener_count > 0:
+                        await st.player.start(nxt)
+                    await st.now_playing.post_or_replace(nxt)
+                except Exception as exc:
+                    log.warning("station %s advance failed: %s", st.guild_id, exc)
 
     @client.event
-    async def on_ready():
-        nonlocal voice, player, text_channel, ready_done
+    async def on_ready() -> None:
+        nonlocal ready_done
         log.info("connected as %s", client.user)
         if ready_done:
             # discord.py may fire on_ready again after a session resume.
@@ -228,66 +300,134 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             return
         ready_done = True
 
-        guild = client.get_guild(config.guild_id)
-        if guild is None:
-            log.error("guild %s not found — is the bot invited?", config.guild_id)
-            await client.close()
-            return
+        loop = asyncio.get_running_loop()
 
-        vc_channel = guild.get_channel(config.voice_channel_id)
-        if not isinstance(vc_channel, discord.VoiceChannel):
-            log.error("voice channel %s is not a voice channel", config.voice_channel_id)
-            await client.close()
-            return
+        # 1. Discover every server we belong to + cache its channels so the
+        #    dashboard can render <select> dropdowns without calling Discord.
+        for guild in client.guilds:
+            gid = str(guild.id)
+            try:
+                channels = await guild.fetch_channels()
+            except Exception as exc:  # pragma: no cover — network edge case
+                log.warning("could not fetch channels for guild %s: %s", gid, exc)
+                channels = []
+            guilds_db.discover_guild(db, gid, guild.name)
+            ch_rows = []
+            for c in channels:
+                if isinstance(c, discord.VoiceChannel):
+                    ctype = "voice"
+                elif isinstance(c, discord.TextChannel):
+                    ctype = "text"
+                else:
+                    continue
+                ch_rows.append(
+                    guilds_db.ChannelRow(
+                        guild_id=gid,
+                        channel_id=str(c.id),
+                        channel_name=c.name,
+                        channel_type=ctype,
+                    )
+                )
+            guilds_db.replace_guild_channels(db, gid, ch_rows)
 
-        text_channel = guild.get_channel(config.text_channel_id)
-        if text_channel is None:
-            log.warning(
-                "text channel %s not found — announcements will be skipped", config.text_channel_id
-            )
+        # 2. Seed the legacy single-guild env vars once (if not admin-managed).
+        guilds_db.seed_env_guild(db, config)
 
-        # Close any sessions left open by a previous crash.
+        # 3. Clean up any sessions left open by a previous crash *before* we
+        #    open fresh ones for the people already in voice.
         closed = tracker.close_orphan_sessions()
         if closed:
             log.info("closed %d orphan sessions on startup", closed)
 
-        # Connect to voice.
-        voice = await vc_channel.connect(reconnect=True)
-
-        # Build the player now that we have a live VoiceClient + running loop.
-        loop = asyncio.get_running_loop()
-        player = Player(
-            voice_client=voice,
-            provider=provider,
-            state=state,
-            loop=loop,
-        )
-        player.on_finish(_advance_and_announce)
-
-        # If channel is already empty, don't start audio — just stay connected.
-        listeners = _non_bot_members(vc_channel)
-        if not listeners:
-            log.info("voice channel is empty on startup — staying silent")
-            state.is_paused = True
-        else:
-            # Open sessions for anyone already present.
-            for member in listeners:
-                tracker.open_session(
-                    user_id=str(member.id),
-                    username=str(member),
-                    server_nickname=member.display_name,
-                    track_id=state.current_track_id,
+        # 4. Build a Station for every enabled guild with valid channels.
+        for cfg in guilds_db.get_enabled_guild_configs(db):
+            guild = client.get_guild(int(cfg.guild_id))
+            if guild is None:
+                log.warning("guild %s not found — is the bot still invited?", cfg.guild_id)
+                continue
+            vc = guild.get_channel(int(cfg.voice_channel_id)) if cfg.voice_channel_id else None
+            if not isinstance(vc, discord.VoiceChannel):
+                log.warning(
+                    "guild %s: voice channel %s missing/invalid — skipping",
+                    cfg.guild_id,
+                    cfg.voice_channel_id,
                 )
-            await _resume_or_start(player, provider, state)
-            cur = player.current_track
-            if cur is not None:
-                await now_playing.post_or_replace(cur)
+                continue
+            tc_id = int(cfg.text_channel_id) if cfg.text_channel_id else None
 
+            try:
+                voice_client = await vc.connect(reconnect=True)
+            except Exception as exc:  # pragma: no cover — permission edge case
+                log.warning("guild %s: could not connect to voice: %s", cfg.guild_id, exc)
+                continue
+
+            player = Player(
+                voice_client=voice_client,
+                provider=provider,
+                state=state,
+                loop=loop,
+                persist_pause_state=False,
+            )
+            np_state = GuildScopedState(db, cfg.guild_id)
+            now_playing = NowPlaying(
+                client=client,
+                text_channel_id=tc_id,
+                state=np_state,
+                db=db,
+                guild_id=cfg.guild_id,
+            )
+            announcer = MilestoneAnnouncer(client=client, text_channel_id=tc_id, db=db)
+            station = Station(
+                guild_id=cfg.guild_id,
+                guild_name=cfg.guild_name or guild.name,
+                voice_channel=vc,
+                voice_channel_id=int(cfg.voice_channel_id),
+                text_channel_id=tc_id,
+                voice_client=voice_client,
+                player=player,
+                now_playing=now_playing,
+                milestones=announcer,
+            )
+            player.on_finish(_advance_and_announce)
+            stations[cfg.guild_id] = station
+            per_guild_announcers[cfg.guild_id] = announcer
+
+            listeners = _non_bot_members(vc)
+            station.listener_count = len(listeners)
+            if listeners:
+                station.is_paused = False
+                for member in listeners:
+                    tracker.open_session(
+                        guild_id=station.guild_id,
+                        user_id=str(member.id),
+                        username=str(member),
+                        server_nickname=member.display_name,
+                        track_id=state.current_track_id,
+                    )
+                await _resume_or_start(player, provider, state)
+                cur = player.current_track
+                if cur is not None:
+                    await now_playing.post_or_replace(cur)
+            else:
+                station.is_paused = True
+                log.info("guild %s voice channel empty on startup — staying silent", cfg.guild_id)
+
+        if not stations:
+            log.warning(
+                "no enabled servers with valid channels — bot is idle. "
+                "Enable a server + pick channels in the dashboard."
+            )
+
+        _update_global_paused()
         scheduler.start()
 
     @client.event
     async def on_voice_state_update(member, before, after):
-        if member.bot or member.guild.id != config.guild_id:
+        if member.bot:
+            return
+        station = stations.get(str(member.guild.id))
+        if station is None:
+            # Not a server we manage — ignore.
             return
 
         event = VoiceEvent(
@@ -296,32 +436,43 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             before_channel_id=before.channel.id if before.channel else None,
             after_channel_id=after.channel.id if after.channel else None,
         )
-        transition = event.transition(config.voice_channel_id)
+        transition = event.transition(station.voice_channel_id)
 
         if transition is Transition.JOINED:
             tracker.open_session(
+                guild_id=station.guild_id,
                 user_id=event.user_id,
                 username=str(member),
                 server_nickname=member.display_name,
                 track_id=state.current_track_id,
             )
-            listeners = _non_bot_members(after.channel)
-            if player is not None and should_resume(len(listeners), state.is_paused):
-                await player.resume()
-                if player.current_track is not None:
-                    await now_playing.post_or_replace(player.current_track)
+            listeners = _non_bot_members(after.channel) if after.channel else []
+            station.listener_count = len(listeners)
+            if should_resume(len(listeners), station.is_paused):
+                await station.player.resume()
+                station.is_paused = False
+                if station.player.current_track is not None:
+                    await station.now_playing.post_or_replace(station.player.current_track)
             else:
-                now_playing.trigger_watcher_count_update()
+                station.now_playing.trigger_watcher_count_update()
         elif transition is Transition.LEFT:
-            closed = tracker.close_session(user_id=event.user_id)
+            closed = tracker.close_session(guild_id=station.guild_id, user_id=event.user_id)
             if closed is not None:
-                await milestones.check_and_announce(closed.user_id)
+                await station.milestones.check_and_announce(closed.user_id)
             # Explicitly exclude the departing user — discord.py's member
             # cache may still include them at this point.
-            listeners = _non_bot_members(before.channel, exclude_user_id=event.user_id)
-            if player is not None and should_pause(len(listeners), state.is_paused):
-                await player.pause()
-            now_playing.trigger_watcher_count_update()
+            listeners = (
+                _non_bot_members(before.channel, exclude_user_id=event.user_id)
+                if before.channel
+                else []
+            )
+            station.listener_count = len(listeners)
+            if should_pause(len(listeners), station.is_paused):
+                await station.player.pause()
+                station.is_paused = True
+            station.now_playing.trigger_watcher_count_update()
+
+        _update_global_paused()
 
     # Graceful shutdown: close scheduler + provider + DB.
     def _install_signal_handlers() -> None:
@@ -334,12 +485,11 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
         log.info("shutting down")
         with contextlib.suppress(Exception):
             scheduler.stop()
-        with contextlib.suppress(Exception):
-            if player is not None:
-                await player.stop_hard()
-        with contextlib.suppress(Exception):
-            if voice is not None:
-                await voice.disconnect(force=True)  # type: ignore[attr-defined]
+        for st in stations.values():
+            with contextlib.suppress(Exception):
+                await st.player.stop_hard()
+            with contextlib.suppress(Exception):
+                await st.voice_client.disconnect(force=True)  # type: ignore[attr-defined]
         with contextlib.suppress(Exception):
             await provider.aclose()
         with contextlib.suppress(Exception):

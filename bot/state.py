@@ -116,3 +116,34 @@ class BotState:
             now_playing_message_id=self.now_playing_message_id,
             playlist_position=self.playlist_position,
         )
+
+
+class GuildScopedState(BotState):
+    """A BotState view scoped to one guild for the *Now Playing* message id.
+
+    The radio has a single shared playback cursor (current track, position,
+    volume, global pause flag), so those keys stay global. But each server
+    keeps its *own* Now Playing embed, so its saved message id must not
+    clobber the others'. This subclass overrides just that one key to be
+    per-guild while delegating everything else to the shared BotState.
+    """
+
+    def __init__(self, db: Database, guild_id: str = "") -> None:
+        super().__init__(db)
+        self._np_key = (
+            f"now_playing_message_id:{guild_id}" if guild_id else BotStateKey.NOW_PLAYING_MESSAGE_ID
+        )
+
+    @property
+    def now_playing_message_id(self) -> int | None:
+        v = self.db.get_state(self._np_key)
+        if not v:
+            return None
+        try:
+            return int(v)
+        except ValueError:
+            return None
+
+    @now_playing_message_id.setter
+    def now_playing_message_id(self, value: int | None) -> None:
+        self.db.set_state(self._np_key, "" if value is None else int(value))
