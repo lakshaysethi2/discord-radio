@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from bot.milestones import MilestoneChecker
+from dataclasses import dataclass, field
+
+from bot.milestones import MilestoneAnnouncer, MilestoneChecker
 from db.database import Database
 
 
@@ -67,3 +69,71 @@ class TestChecker:
         got = c.check_user("u1")
         assert got[0].username == "User_u1"
         assert got[0].user_id == "u1"
+
+
+# ------------------------------------------------------------------ announcer
+@dataclass
+class FakeChannel:
+    sent: list[str] = field(default_factory=list)
+
+    async def send(self, content: str) -> None:
+        self.sent.append(content)
+
+
+@dataclass
+class FakeClient:
+    channels: dict = field(default_factory=dict)
+
+    def get_channel(self, cid: int):
+        return self.channels.get(cid)
+
+
+class TestAnnouncer:
+    async def test_no_milestones_no_send(self, db: Database) -> None:
+        _seed(db, "u1", alltime_seconds=3600)  # 1h — below 5h threshold
+        channel = FakeChannel()
+        client = FakeClient(channels={42: channel})
+        ann = MilestoneAnnouncer(client=client, text_channel_id=42, db=db)
+        got = await ann.check_and_announce("u1")
+        assert got == []
+        assert channel.sent == []
+
+    async def test_sends_on_milestone(self, db: Database) -> None:
+        _seed(db, "u1", alltime_seconds=5 * 3600)
+        channel = FakeChannel()
+        client = FakeClient(channels={42: channel})
+        ann = MilestoneAnnouncer(client=client, text_channel_id=42, db=db)
+        got = await ann.check_and_announce("u1")
+        assert len(got) == 1
+        assert len(channel.sent) == 1
+        assert "5 hours" in channel.sent[0]
+        assert "<@u1>" in channel.sent[0]
+
+    async def test_multiple_milestones_multiple_sends(self, db: Database) -> None:
+        _seed(db, "u1", alltime_seconds=100 * 3600)
+        channel = FakeChannel()
+        client = FakeClient(channels={42: channel})
+        ann = MilestoneAnnouncer(client=client, text_channel_id=42, db=db)
+        got = await ann.check_and_announce("u1")
+        assert len(got) == 3  # 5, 10, 100
+        assert len(channel.sent) == 3
+
+    async def test_no_channel_still_returns_milestones(self, db: Database) -> None:
+        """If the text channel isn't found we still flip the flags."""
+        _seed(db, "u1", alltime_seconds=5 * 3600)
+        client = FakeClient(channels={})  # nothing at 42
+        ann = MilestoneAnnouncer(client=client, text_channel_id=42, db=db)
+        got = await ann.check_and_announce("u1")
+        assert len(got) == 1
+        # Flag flipped even though we couldn't send.
+        row = db.fetchone("SELECT milestone_5h FROM user_totals WHERE user_id='u1'")
+        assert row["milestone_5h"] == 1
+
+    async def test_idempotent_after_flip(self, db: Database) -> None:
+        _seed(db, "u1", alltime_seconds=5 * 3600)
+        channel = FakeChannel()
+        client = FakeClient(channels={42: channel})
+        ann = MilestoneAnnouncer(client=client, text_channel_id=42, db=db)
+        await ann.check_and_announce("u1")
+        await ann.check_and_announce("u1")  # second call should be silent
+        assert len(channel.sent) == 1
