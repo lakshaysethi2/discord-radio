@@ -27,9 +27,10 @@ channel occupancy.
 
 ---
 
-## First run (env bootstrap)
+## First run (optional env bootstrap)
 
-If you set the legacy env vars, they are used as a one-time seed:
+These are **optional** — leave them unset to configure everything from the
+dashboard. If you do set the legacy env vars, they are used as a one-time seed:
 
 ```
 DISCORD_GUILD_ID=123

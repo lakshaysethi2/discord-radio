@@ -47,9 +47,10 @@ def _env_int_or(key: str, default: int) -> int:
 @dataclass(slots=True, frozen=True)
 class BotConfig:
     token: str
-    # The three guild-id vars are now *optional bootstrap* values: they seed
-    # the bot's first server on first boot, but the dashboard is the source of
-    # truth for which servers the bot speaks in (see db.guilds / §servers).
+    # The three guild-id vars are *optional* legacy bootstrap values (no longer
+    # required): if set, they seed the bot's first server on first boot, but the
+    # dashboard is the source of truth for which servers the bot speaks in
+    # (see db.guilds / §servers).
     guild_id: int = 0
     voice_channel_id: int = 0
     text_channel_id: int = 0
