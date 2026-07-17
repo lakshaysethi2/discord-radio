@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from file_provider.db import STATE_CURSOR, ProviderDB
 
 
@@ -206,3 +208,17 @@ def test_list_all_search_retains_natural_playlist_position(db: ProviderDB) -> No
     _insert(db, ["a", "b", "c"])
     row = db.list_all(search="Tc")[0]
     assert row["playlist_position"] == 2
+
+
+def test_unwritable_directory_raises(tmp_path) -> None:
+    ro_dir = tmp_path / "ro"
+    ro_dir.mkdir()
+    ro_dir.chmod(0o555)
+    try:
+        import pytest
+
+        with pytest.raises((PermissionError, sqlite3.OperationalError)) as exc_info:
+            ProviderDB(ro_dir / "fail.db")
+        assert "not writable" in str(exc_info.value)
+    finally:
+        ro_dir.chmod(0o755)
