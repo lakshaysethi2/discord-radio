@@ -37,6 +37,7 @@ class DashboardConfig:
     discord_client_id: str
     discord_client_secret: str
     discord_redirect_uri: str
+    superadmin_password: str = ""
     admin_user_ids: frozenset[str] = field(default_factory=frozenset)
 
     @property
@@ -55,5 +56,6 @@ def load() -> DashboardConfig:
         discord_client_id=_env("DISCORD_CLIENT_ID"),
         discord_client_secret=_env("DISCORD_CLIENT_SECRET"),
         discord_redirect_uri=_env("DISCORD_REDIRECT_URI"),
+        superadmin_password=_env("SUPERADMIN_PASSWORD"),
         admin_user_ids=_env_id_list("ADMIN_USER_IDS"),
     )

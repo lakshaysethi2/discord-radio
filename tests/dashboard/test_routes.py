@@ -38,13 +38,34 @@ class TestUnauth:
 
 
 class TestLoginPage:
-    def test_login_redirects_when_configured(self, client: TestClient) -> None:
-        r = client.get("/login")
+    def test_login_page_renders_with_both_methods(self, db, http_client) -> None:
+        from dashboard.config import DashboardConfig
+
+        cfg = DashboardConfig(
+            port=8000,
+            secret_key="k" * 32,
+            database_path=":memory:",
+            file_provider_base_url="",
+            discord_client_id="cid",
+            discord_client_secret="sec",
+            discord_redirect_uri="http://x/cb",
+            superadmin_password="super-secret",
+            admin_user_ids=frozenset(),
+        )
+        app = create_app(cfg, db=db, http_client=http_client)
+        c = TestClient(app, follow_redirects=False)
+        r = c.get("/login")
+        assert r.status_code == 200
+        assert "Option 1: Discord Sign-in" in r.text
+        assert "Superadmin Sign-in" in r.text
+
+    def test_login_discord_redirects_when_configured(self, client: TestClient) -> None:
+        r = client.get("/login/discord")
         assert r.status_code == 307
         assert r.headers["location"].startswith("https://discord.com/oauth2/authorize?")
         assert "tvbot_oauth_state" in r.cookies
 
-    def test_login_page_when_not_configured(self, db, http_client) -> None:
+    def test_login_discord_not_configured_redirects_back(self, db, http_client) -> None:
         from dashboard.config import DashboardConfig
 
         cfg = DashboardConfig(
@@ -55,13 +76,77 @@ class TestLoginPage:
             discord_client_id="",
             discord_client_secret="",
             discord_redirect_uri="",
+            superadmin_password="",
             admin_user_ids=frozenset(),
         )
         app = create_app(cfg, db=db, http_client=http_client)
         c = TestClient(app, follow_redirects=False)
-        r = c.get("/login")
-        assert r.status_code == 200
-        assert "OAuth is not configured" in r.text
+        r = c.get("/login/discord")
+        assert r.status_code == 303
+        assert r.headers["location"] == "/login?error=Discord+OAuth+is+not+configured"
+
+    def test_superadmin_login_success(self, db, http_client) -> None:
+        from dashboard.config import DashboardConfig
+
+        cfg = DashboardConfig(
+            port=8000,
+            secret_key="k" * 32,
+            database_path=":memory:",
+            file_provider_base_url="",
+            discord_client_id="",
+            discord_client_secret="",
+            discord_redirect_uri="",
+            superadmin_password="super-secret",
+            admin_user_ids=frozenset(),
+        )
+        app = create_app(cfg, db=db, http_client=http_client)
+        c = TestClient(app, follow_redirects=False)
+        r = c.post("/login", data={"password": "super-secret"})
+        assert r.status_code == 303
+        assert r.headers["location"] == "/dashboard"
+        assert "tvbot_session" in r.cookies
+
+    def test_superadmin_login_wrong_password(self, db, http_client) -> None:
+        from dashboard.config import DashboardConfig
+
+        cfg = DashboardConfig(
+            port=8000,
+            secret_key="k" * 32,
+            database_path=":memory:",
+            file_provider_base_url="",
+            discord_client_id="",
+            discord_client_secret="",
+            discord_redirect_uri="",
+            superadmin_password="super-secret",
+            admin_user_ids=frozenset(),
+        )
+        app = create_app(cfg, db=db, http_client=http_client)
+        c = TestClient(app, follow_redirects=False)
+        r = c.post("/login", data={"password": "wrong-password"})
+        assert r.status_code == 303
+        assert r.headers["location"] == "/login?error=Invalid+password"
+        assert "tvbot_session" not in r.cookies
+
+    def test_superadmin_login_not_configured(self, db, http_client) -> None:
+        from dashboard.config import DashboardConfig
+
+        cfg = DashboardConfig(
+            port=8000,
+            secret_key="k" * 32,
+            database_path=":memory:",
+            file_provider_base_url="",
+            discord_client_id="",
+            discord_client_secret="",
+            discord_redirect_uri="",
+            superadmin_password="",
+            admin_user_ids=frozenset(),
+        )
+        app = create_app(cfg, db=db, http_client=http_client)
+        c = TestClient(app, follow_redirects=False)
+        r = c.post("/login", data={"password": "any"})
+        assert r.status_code == 303
+        assert r.headers["location"] == "/login?error=Superadmin+login+not+configured"
+        assert "tvbot_session" not in r.cookies
 
 
 # ----------------------------------------------------------------- callback

@@ -126,15 +126,23 @@ def create_app(
     def index() -> RedirectResponse:
         return RedirectResponse("/dashboard", status_code=307)
 
-    # ---- OAuth2 ----
+    # ---- Authentication ----
     @app.get("/login")
     def login(request: Request) -> Response:
+        return _render(
+            request,
+            "login.html",
+            {
+                "oauth_configured": config.oauth_configured,
+                "superadmin_configured": bool(config.superadmin_password),
+                "error": request.query_params.get("error"),
+            },
+        )
+
+    @app.get("/login/discord")
+    def login_discord(request: Request) -> Response:
         if not config.oauth_configured:
-            return _render(
-                request,
-                "login.html",
-                {"oauth_configured": False, "error": None},
-            )
+            return RedirectResponse("/login?error=Discord+OAuth+is+not+configured", status_code=303)
         state = auth.generate_state()
         url = auth.build_login_url(
             client_id=config.discord_client_id,
@@ -147,6 +155,33 @@ def create_app(
             auth.OAUTH_STATE_COOKIE,
             signer.encode({"state": state}),
             max_age=600,
+            httponly=True,
+            samesite="lax",
+            secure=request.url.scheme == "https",
+        )
+        return resp
+
+    @app.post("/login")
+    def login_post(
+        request: Request,
+        password: str = Form(""),
+    ) -> Response:
+        if not config.superadmin_password:
+            return RedirectResponse("/login?error=Superadmin+login+not+configured", status_code=303)
+
+        if password != config.superadmin_password:
+            return RedirectResponse("/login?error=Invalid+password", status_code=303)
+
+        session_data = {
+            "user_id": "superadmin",
+            "username": "Superadmin",
+            "csrf": secrets.token_urlsafe(24),
+        }
+        resp = RedirectResponse("/dashboard", status_code=303)
+        resp.set_cookie(
+            auth.SESSION_COOKIE_NAME,
+            signer.encode(session_data),
+            max_age=auth.COOKIE_MAX_AGE,
             httponly=True,
             samesite="lax",
             secure=request.url.scheme == "https",
