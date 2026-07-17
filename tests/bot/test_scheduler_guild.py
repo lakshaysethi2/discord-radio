@@ -47,3 +47,20 @@ class TestPerGuildAnnounce:
         sched = Scheduler(db=db, tracker=tracker, per_guild_announcers={})
         # No announcer + no fallback → safe no-op, no raise.
         await sched._maybe_announce("u1", "ghost")
+
+    async def test_announce_open_sessions_iterates_real_rows(self, db: Database) -> None:
+        # Exercises the real checkpoint-loop body, which reads guild_id off a
+        # real sqlite3.Row (no .get() — that previously crashed). See review #2.
+        tracker = SessionTracker(db)
+        g1, g2 = FakeAnnouncer(), FakeAnnouncer()
+        sched = Scheduler(db=db, tracker=tracker, per_guild_announcers={"g1": g1, "g2": g2})
+        tracker.open_session(
+            user_id="u1", username="A", server_nickname=None, track_id="t", guild_id="g1"
+        )
+        tracker.open_session(
+            user_id="u2", username="B", server_nickname=None, track_id="t", guild_id="g2"
+        )
+        # Must not raise AttributeError; must route to the right announcer.
+        await sched._announce_open_sessions()
+        assert g1.calls == ["u1"]
+        assert g2.calls == ["u2"]

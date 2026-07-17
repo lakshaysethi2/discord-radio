@@ -386,16 +386,27 @@ def create_app(
         if cfg is None:
             raise HTTPException(status_code=400, detail="unknown guild")
 
-        # Constrain the chosen channel ids to channels we discovered for this
-        # guild — never trust raw form values against Discord.
-        valid = {ch.channel_id for ch in guilds_db.get_guild_channels(db, guild_id)}
-        vcid = voice_channel_id if voice_channel_id in valid else None
-        tcid = text_channel_id if text_channel_id in valid else None
+        # Constrain each chosen channel id to channels we discovered for this
+        # guild *of the correct type* — never trust raw form values, and don't
+        # let a text channel be saved as the voice channel (or vice versa).
+        channels = guilds_db.get_guild_channels(db, guild_id)
+        voice_ids = {ch.channel_id for ch in channels if ch.channel_type == "voice"}
+        text_ids = {ch.channel_id for ch in channels if ch.channel_type == "text"}
+        vcid = voice_channel_id if voice_channel_id in voice_ids else None
+        tcid = text_channel_id if text_channel_id in text_ids else None
+
+        wants_enabled = enabled == "on"
+        if wants_enabled and (vcid is None or tcid is None):
+            # Refuse to persist a config that looks enabled but cannot start.
+            raise HTTPException(
+                status_code=400,
+                detail="enable requires one valid voice channel and one valid text channel",
+            )
 
         guilds_db.apply_guild_config(
             db,
             guild_id,
-            enabled=(enabled == "on"),
+            enabled=wants_enabled,
             voice_channel_id=vcid,
             text_channel_id=tcid,
         )

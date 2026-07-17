@@ -6,7 +6,7 @@ voice/text/embeds/milestones), admins manage it from the dashboard **Servers**
 page, and the legacy single-guild env vars became an optional one-time bootstrap.
 
 ## Test scoreboard
-- **347 tests passing** (0 failing, 0 skipped)
+- **354 tests passing** (0 failing, 0 skipped)
 - `ruff check .` clean · `ruff format --check .` clean
 - `make test`, `make lint`, `make help` all work
 
@@ -103,3 +103,26 @@ page, and the legacy single-guild env vars became an optional one-time bootstrap
   `tests/bot/test_scheduler_guild.py`, `tests/dashboard/test_servers.py`.
 - Verification: `.venv/bin/python -m pytest -q` → **347 passed**; `ruff check .`
   clean; `ruff format --check .` clean.
+
+## Review fixes (PR #4) — 2026-07-17
+Addressed the three items raised in code review:
+- **Shared-cursor correctness (High):** added `RadioClock`, the single
+  authoritative playback clock, decoupled from any `Player`'s per-voice-client
+  clock. Stations now join/resume at `radio.position()` so every server hears
+  the same track at the same offset; the global position is only persisted by
+  the orchestrator on play/pause transitions. `Player` no longer writes the
+  global position/is_paused when `persist_pause_state=False` (so an idle
+  server can't corrupt the cursor). New tests in `tests/bot/test_radio_clock.py`
+  cover the "Guild A has played N seconds → Guild B joins at ~N seconds" case.
+- **Checkpoint crash (High):** `sqlite3.Row` has no `.get()`; the scheduler's
+  checkpoint loop now indexes `row["guild_id"]` and the loop body was
+  extracted to `Scheduler._announce_open_sessions()` (covered by a real-`Row`
+  test in `tests/bot/test_scheduler_guild.py`).
+- **Channel-type validation (Medium):** `/servers/update` now validates the
+  voice id against *voice* channels and the text id against *text* channels
+  (not a combined set), and refuses to persist an `enabled` config that lacks
+  one valid voice + one valid text channel (HTTP 400). Tests updated in
+  `tests/dashboard/test_servers.py`.
+
+Verification after fixes: `.venv/bin/python -m pytest -q` → **354 passed**;
+`ruff check .` clean; `ruff format --check .` clean.

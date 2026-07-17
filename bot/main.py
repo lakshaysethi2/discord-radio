@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 import logging
 import signal
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -61,6 +62,82 @@ class Station:
     milestones: MilestoneAnnouncer
     is_paused: bool = True
     listener_count: int = 0
+
+
+class RadioClock:
+    """Authoritative shared-radio playback clock (independent of any voice client).
+
+    The radio plays one stream into many servers, so the "current position"
+    must not live on a single Player -- a player that joined late (or an idle
+    one that paused) would otherwise overwrite the global position with its
+    own stale clock. RadioClock owns the single source of truth:
+
+    * while playing: position = base_offset + (now - started_at)
+    * while paused:   position = base_offset (frozen)
+
+    Stations start/resume by seeking to radio.position() so every server joins
+    the stream at exactly the same point.
+    """
+
+    def __init__(self) -> None:
+        self._playing = False
+        self._started_at: float | None = None
+        self._base_offset = 0.0
+
+    def init_from_state(self, offset: float, playing: bool) -> None:
+        self._base_offset = max(0.0, float(offset))
+        self._playing = bool(playing)
+        self._started_at = time.monotonic() if playing else None
+
+    def start(self, base_offset: float) -> None:
+        self._playing = True
+        self._started_at = time.monotonic()
+        self._base_offset = max(0.0, float(base_offset))
+
+    def pause(self) -> None:
+        if self._playing:
+            # Freeze at the exact position we are currently at.
+            self._base_offset = self.position()
+        self._playing = False
+        self._started_at = None
+
+    def position(self) -> float:
+        if self._playing and self._started_at is not None:
+            return self._base_offset + max(0.0, time.monotonic() - self._started_at)
+        return self._base_offset
+
+    def is_playing(self) -> bool:
+        return self._playing
+
+
+async def resume_station_at_radio_position(
+    player, provider, state, radio, *, max_attempts: int = 3
+) -> object | None:
+    """Start a station's player at the *shared* radio position.
+
+    Used when the first listener joins a previously-idle station (or when a
+    resume command is issued): the station must pick up the same track at the
+    same offset everyone else is hearing, not a stale persisted position.
+    """
+    track_id = state.current_track_id
+    if not track_id:
+        return None
+    seek = radio.position()
+    track = None
+    for _ in range(max(1, max_attempts)):
+        try:
+            track = await provider.get_by_id(track_id)
+        except Exception:
+            track = None
+            break
+        if track.ready and track.local_path:
+            break
+        # Not ready yet; the advance loop owns the heavier retry logic.
+        break
+    if track is None or not track.ready or not track.local_path:
+        return None
+    await player.start(track, seek_seconds=seek)
+    return track
 
 
 def _init_logging() -> None:
@@ -166,12 +243,28 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
     stations: dict[str, Station] = {}
     per_guild_announcers: dict[str, MilestoneAnnouncer] = {}
     _advance_lock = asyncio.Lock()
+    # The single authoritative shared-radio clock (see RadioClock).
+    radio = RadioClock()
     ready_done = False  # guard against on_ready firing more than once
 
     def _update_global_paused() -> None:
-        """The radio is 'paused' only when nobody is listening anywhere."""
+        """Keep the shared-radio pause flag + clock in sync with total listeners.
+
+        The radio is "paused" only when nobody is listening anywhere. When the
+        last listener leaves we freeze the radio clock (so its position stops
+        advancing); when the first listener returns we resume the clock from
+        the frozen position.
+        """
         total = sum(s.listener_count for s in stations.values())
-        state.is_paused = total == 0
+        if total == 0:
+            if not state.is_paused:
+                state.is_paused = True
+                radio.pause()
+                state.playback_position_seconds = int(radio.position())
+        else:
+            if state.is_paused:
+                state.is_paused = False
+                radio.start(radio.position())
 
     async def _handle_command(command: str, payload: dict | None) -> str:
         """Called by the scheduler's command loop for each pending row.
@@ -196,7 +289,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
         if command == "resume":
             for st in stations.values():
                 if st.listener_count > 0:
-                    await st.player.resume()
+                    await resume_station_at_radio_position(st.player, provider, state, radio)
                     st.is_paused = False
                     if st.player.current_track is not None:
                         await st.now_playing.post_or_replace(st.player.current_track)
@@ -223,6 +316,9 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 return f"error: jump failed: {exc}"
             if not track.ready or not track.local_path:
                 return f"error: track {track_id} not ready"
+            # Jumping to a chosen track resets the shared cursor to offset 0.
+            radio.start(0)
+            state.playback_position_seconds = 0
             for st in stations.values():
                 if st.listener_count > 0:
                     await st.player.start(track)
@@ -281,6 +377,9 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 log.error("giving up on advancing after 10 attempts — bot will be silent")
                 return
 
+            # The cursor moved to a new track starting at offset 0.
+            radio.start(0)
+            state.playback_position_seconds = 0
             for st in stations.values():
                 try:
                     if st.listener_count > 0:
@@ -418,7 +517,10 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 "Enable a server + pick channels in the dashboard."
             )
 
-        _update_global_paused()
+        # Initialise the shared-radio clock from the persisted cursor.
+        total = sum(s.listener_count for s in stations.values())
+        state.is_paused = total == 0
+        radio.init_from_state(float(state.playback_position_seconds), playing=not state.is_paused)
         scheduler.start()
 
     @client.event
@@ -449,10 +551,13 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             listeners = _non_bot_members(after.channel) if after.channel else []
             station.listener_count = len(listeners)
             if should_resume(len(listeners), station.is_paused):
-                await station.player.resume()
+                # Join the shared radio *at its current position*, not at a
+                # stale per-player clock — every server hears the same offset.
+                await resume_station_at_radio_position(station.player, provider, state, radio)
                 station.is_paused = False
-                if station.player.current_track is not None:
-                    await station.now_playing.post_or_replace(station.player.current_track)
+                cur = station.player.current_track
+                if cur is not None:
+                    await station.now_playing.post_or_replace(cur)
             else:
                 station.now_playing.trigger_watcher_count_update()
         elif transition is Transition.LEFT:

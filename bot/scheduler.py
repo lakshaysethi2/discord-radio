@@ -147,8 +147,7 @@ class Scheduler:
                         log.info("checkpointed %d open sessions", n)
                     # After checkpoints, check milestones for everyone with an
                     # open session — routed to that session's own server.
-                    for row in self.tracker.open_sessions():
-                        await self._maybe_announce(row["user_id"], row.get("guild_id", ""))
+                    await self._announce_open_sessions()
                 except Exception:
                     log.exception("checkpoint loop iteration failed")
         except asyncio.CancelledError:
@@ -167,6 +166,16 @@ class Scheduler:
                 await asyncio.sleep(self.monthly_check_interval_seconds)
         except asyncio.CancelledError:
             pass
+
+    async def _announce_open_sessions(self) -> None:
+        """Route milestone checks to the correct server for every open session.
+
+        ``open_sessions()`` returns ``sqlite3.Row`` objects, which support
+        subscripting (``row["guild_id"]``) but not ``.get()`` — so we index
+        directly.
+        """
+        for row in self.tracker.open_sessions():
+            await self._maybe_announce(row["user_id"], row["guild_id"])
 
     async def _maybe_announce(self, user_id: str, guild_id: str = "") -> None:
         announcer = self.per_guild_announcers.get(guild_id) if guild_id else None

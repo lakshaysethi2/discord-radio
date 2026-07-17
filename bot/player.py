@@ -169,9 +169,9 @@ class Player:
         self.clock.start(resume_from=seek_seconds)
 
         self.state.current_track_id = track.track_id
-        self.state.playback_position_seconds = int(seek_seconds)
         self.state.playlist_position = track.playlist_position
         if self.persist_pause_state:
+            self.state.playback_position_seconds = int(seek_seconds)
             self.state.is_paused = False
 
         # `after` runs on FFmpeg's cleanup thread — schedule the callback back
@@ -222,8 +222,8 @@ class Player:
             if self.voice_client.is_playing():
                 self.voice_client.stop()
             elapsed = self.clock.stop()
-            self.state.playback_position_seconds = int(elapsed)
             if self.persist_pause_state:
+                self.state.playback_position_seconds = int(elapsed)
                 self.state.is_paused = True
 
     async def resume(self) -> None:
