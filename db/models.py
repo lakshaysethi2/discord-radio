@@ -252,6 +252,7 @@ class BotStateKey:
     PLAYLIST_POSITION = "playlist_position"
     LAST_MONTHLY_RESET = "last_monthly_reset"  # yyyy-mm we last snapshotted
     STREAM_VOLUME_PERCENT = "stream_volume_percent"
+    ARCHIVE_ORG_ITEMS = "archive_org_items"
 
 
 BOT_STATE_KEYS: frozenset[str] = frozenset(

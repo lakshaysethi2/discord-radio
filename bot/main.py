@@ -27,8 +27,6 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-import httpx
-
 from bot.config import BotConfig, load
 from bot.milestones import MilestoneAnnouncer, NowPlaying
 from bot.player import Player
@@ -411,6 +409,18 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             # (e.g. a disable should freeze the clock if it was the only one).
             sync_radio_state(stations, radio, state, admin_paused=admin_paused)
             return result
+        if command == "refresh_playlist":
+            # File-provider owns playlists — ask it to rescan.
+            try:
+                items = (payload or {}).get("archive_org_items") if payload else None
+                if not items:
+                    from db.models import BotStateKey
+
+                    items = db.get_state(BotStateKey.ARCHIVE_ORG_ITEMS)
+                res = await provider.refresh(archive_org_items=items)
+                return f"ok:{res}"
+            except Exception as exc:
+                return f"error: {exc}"
         if not stations:
             return "error: no servers configured"
         if command == "skip":
@@ -475,14 +485,6 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                     await st.now_playing.post_or_replace(track)
             sync_radio_state(stations, radio, state, admin_paused=admin_paused)
             return f"ok:playing:{track_id}"
-        if command == "refresh_playlist":
-            # File-provider owns playlists — ask it to rescan.
-            try:
-                async with httpx.AsyncClient(base_url=config.file_provider_base_url) as h:
-                    r = await h.post("/refresh", timeout=30)
-                return f"ok:{r.status_code}"
-            except Exception as exc:
-                return f"error: {exc}"
         return f"error: unknown command {command!r}"
 
     async def _build_station(guild, cfg) -> Station | None:

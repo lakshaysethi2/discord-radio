@@ -29,6 +29,14 @@ class TestRefresh:
         assert stats["added"] == 0
         assert stats["updated"] == 3
 
+    def test_refresh_dynamic_archive_org_items(self, db, cache, fake_provider) -> None:
+        s = Service(db, cache, [fake_provider])
+        s.refresh_playlist(archive_org_items="item1,item2")
+        from file_provider.providers.archive import ArchiveOrgProvider
+
+        archive_p = next(p for p in s.providers if isinstance(p, ArchiveOrgProvider))
+        assert archive_p.item_ids == ["item1", "item2"]
+
 
 class TestCurrentAndNext:
     def test_current_returns_first(self, service: Service) -> None:

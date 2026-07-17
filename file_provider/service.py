@@ -77,8 +77,43 @@ class Service:
             return lk
 
     # ---------------------------------------------------------------- scan
-    def refresh_playlist(self) -> dict:
+    def refresh_playlist(self, archive_org_items: str | list[str] | None = None) -> dict:
         """Ask every configured provider for its tracks; merge into the DB."""
+        if archive_org_items is None:
+            import os
+
+            tv_db_path = Path(os.environ.get("DATABASE_PATH", "./data/tv.db"))
+            if tv_db_path.exists():
+                with contextlib.suppress(Exception):
+                    import sqlite3
+
+                    conn = sqlite3.connect(str(tv_db_path))
+                    cur = conn.cursor()
+                    cur.execute("SELECT value FROM bot_state WHERE key='archive_org_items'")
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        archive_org_items = row[0]
+                    conn.close()
+
+        if archive_org_items is not None:
+            if isinstance(archive_org_items, str):
+                items = [x.strip() for x in archive_org_items.split(",") if x.strip()]
+            else:
+                items = [x.strip() for x in archive_org_items if x.strip()]
+
+            from file_provider.providers.archive import ArchiveOrgProvider
+
+            archive_provider = next(
+                (p for p in self.providers if isinstance(p, ArchiveOrgProvider)), None
+            )
+            if archive_provider is None:
+                if items:
+                    archive_provider = ArchiveOrgProvider(item_ids=items)
+                    self.providers.append(archive_provider)
+                    self._provider_by_name[archive_provider.name] = archive_provider
+            else:
+                archive_provider.item_ids = items
+
         added_total = updated_total = 0
         errors: dict[str, str] = {}
         for provider in self.providers:
@@ -338,9 +373,12 @@ def build_service(config: Config, providers: list[BaseProvider] | None = None) -
 
 def _providers_from_config(config: Config) -> list[BaseProvider]:
     """Instantiate providers per FILE_PROVIDER_ORDER."""
+    import os
+
     from file_provider.providers.local import LocalProvider
 
     out: list[BaseProvider] = []
+    has_archive = "archive" in config.provider_order
     for name in config.provider_order:
         if name == "local":
             out.append(LocalProvider(config.local_media_path))
@@ -361,4 +399,26 @@ def _providers_from_config(config: Config) -> list[BaseProvider]:
             )
         else:
             log.warning("unknown provider '%s' in FILE_PROVIDER_ORDER", name)
+
+    archive_items = list(config.archive_org_items)
+    tv_db_path = Path(os.environ.get("DATABASE_PATH", "./data/tv.db"))
+    if tv_db_path.exists():
+        with contextlib.suppress(Exception):
+            import sqlite3
+
+            conn = sqlite3.connect(str(tv_db_path))
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM bot_state WHERE key='archive_org_items'")
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                db_val = row[0].strip()
+                if db_val:
+                    archive_items = [x.strip() for x in db_val.split(",") if x.strip()]
+            conn.close()
+
+    if not has_archive and archive_items:
+        from file_provider.providers.archive import ArchiveOrgProvider
+
+        out.append(ArchiveOrgProvider(item_ids=archive_items))
+
     return out

@@ -379,3 +379,36 @@ class TestVolumeControls:
         )
         assert response.status_code == 303
         assert "250" in db.fetchone("SELECT payload FROM dashboard_commands")["payload"]
+
+
+class TestArchiveItemsControls:
+    def test_archive_items_saved_and_enqueued(
+        self, client: TestClient, admin_cookie: dict, db: Database
+    ) -> None:
+        response = client.post(
+            "/controls/archive_items",
+            data={
+                "archive_org_items": "Hawkins_Lectures_transcoded_actual_files",
+                "csrf": "csrf-test",
+            },
+            cookies=admin_cookie,
+        )
+        assert response.status_code == 303
+        assert "Saved+archive.org+items" in response.headers["location"]
+
+        # Check DB state was updated
+        val = db.get_state("archive_org_items")
+        assert val == "Hawkins_Lectures_transcoded_actual_files"
+
+        # Check refresh_playlist command was enqueued with payload
+        row = db.fetchone("SELECT command, payload FROM dashboard_commands")
+        assert row["command"] == "refresh_playlist"
+        assert "Hawkins_Lectures_transcoded_actual_files" in row["payload"]
+
+    def test_archive_items_requires_csrf(self, client: TestClient, admin_cookie: dict) -> None:
+        response = client.post(
+            "/controls/archive_items",
+            data={"archive_org_items": "item1", "csrf": "wrong"},
+            cookies=admin_cookie,
+        )
+        assert response.status_code == 403
