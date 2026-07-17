@@ -39,6 +39,7 @@ from fastapi.templating import Jinja2Templates
 from dashboard import auth, commands, queries
 from dashboard.config import DashboardConfig, load
 from db.database import Database
+from db.models import BotStateKey
 from provider.client import FileProviderClient
 
 log = logging.getLogger(__name__)
@@ -313,6 +314,7 @@ def create_app(
                 "pending": commands.pending(db),
                 "csrf": sess.get("csrf", ""),
                 "command_flash": request.query_params.get("flash"),
+                "stream_volume_percent": db.get_state_int(BotStateKey.STREAM_VOLUME_PERCENT, 100),
             },
         )
 
@@ -406,6 +408,28 @@ def create_app(
         params = {"page": page, "q": q, "flash": "Playing selected track"}
         return RedirectResponse(
             "/queue?" + urlencode({k: v for k, v in params.items() if v}), status_code=303
+        )
+
+    @app.post("/controls/volume")
+    async def set_volume(
+        request: Request,
+        volume_percent: int = Form(...),
+        csrf: str = Form(""),
+        user: auth.SessionUser = Depends(_require_admin),
+    ) -> Response:
+        sess = _get_session(request) or {}
+        if not sess.get("csrf") or not hmac.compare_digest(sess["csrf"], csrf):
+            raise HTTPException(status_code=403, detail="invalid CSRF token")
+        if not 50 <= volume_percent <= 150:
+            raise HTTPException(status_code=422, detail="volume must be between 50 and 150")
+        commands.enqueue(
+            app.state.db,
+            command="set_volume",
+            requested_by=user.user_id,
+            payload={"volume_percent": volume_percent},
+        )
+        return RedirectResponse(
+            f"/dashboard?flash=Queued+volume+{volume_percent}%25", status_code=303
         )
 
     # ---- Controls ----

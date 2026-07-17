@@ -150,6 +150,15 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             if player.current_track is not None:
                 await now_playing.post_or_replace(player.current_track)
             return "ok:resumed"
+        if command == "set_volume":
+            try:
+                volume = int((payload or {}).get("volume_percent"))
+            except (TypeError, ValueError):
+                return "error: set_volume requires integer payload {volume_percent}"
+            if not 50 <= volume <= 150:
+                return "error: volume must be between 50 and 150"
+            applied = await player.set_volume(volume)
+            return f"ok:volume:{applied}"
         if command == "play_track":
             if not payload or not isinstance(payload.get("track_id"), str):
                 return "error: play_track requires payload {track_id}"

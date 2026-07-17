@@ -343,3 +343,28 @@ class TestQueuePlaylistControls:
             "/queue/play", data={"track_id": "chosen", "csrf": "wrong"}, cookies=admin_cookie
         )
         assert response.status_code == 403
+
+
+class TestVolumeControls:
+    def test_volume_control_enqueues_valid_command(
+        self, client: TestClient, admin_cookie: dict, db: Database
+    ) -> None:
+        response = client.post(
+            "/controls/volume",
+            data={"volume_percent": "125", "csrf": "csrf-test"},
+            cookies=admin_cookie,
+        )
+        assert response.status_code == 303
+        row = db.fetchone("SELECT command, payload FROM dashboard_commands")
+        assert row["command"] == "set_volume"
+        assert "125" in row["payload"]
+
+    def test_volume_control_rejects_unsafe_gain(
+        self, client: TestClient, admin_cookie: dict
+    ) -> None:
+        response = client.post(
+            "/controls/volume",
+            data={"volume_percent": "400", "csrf": "csrf-test"},
+            cookies=admin_cookie,
+        )
+        assert response.status_code == 422

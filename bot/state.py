@@ -89,6 +89,16 @@ class BotState:
         self.set(BotStateKey.PLAYLIST_POSITION, max(0, int(value)))
 
     @property
+    def stream_volume_percent(self) -> int:
+        """Persistent global FFmpeg gain, constrained to the admin UI range."""
+        value = self.db.get_state_int(BotStateKey.STREAM_VOLUME_PERCENT, 100)
+        return min(150, max(50, value))
+
+    @stream_volume_percent.setter
+    def stream_volume_percent(self, value: int) -> None:
+        self.set(BotStateKey.STREAM_VOLUME_PERCENT, min(150, max(50, int(value))))
+
+    @property
     def last_monthly_reset(self) -> str | None:
         v = self.get(BotStateKey.LAST_MONTHLY_RESET)
         return v if v else None
