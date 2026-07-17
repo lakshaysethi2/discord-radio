@@ -1,17 +1,16 @@
 # PROGRESS.md — snapshot for a fresh session
 
-Last updated: **iteration 20** — all 12 blueprint phases complete + four hostile-review passes + real smoke tests of both services.
+Last updated: **iteration 21** — fixed SQLite connection concurrency / cursor corruption bugs, added live debounced watcher count edits to the Now Playing embed, and expanded tests.
 
 ## Test scoreboard
-- **263 tests passing** (0 failing, 0 skipped)
-- **84% line coverage** (uncovered = live discord.py sends, live Telethon MTProto, timing loops explicitly marked `pragma: no cover`)
+- **285 tests passing** (0 failing, 0 skipped)
 - `ruff check .` clean · `ruff format --check .` clean
 - `make test`, `make lint`, `make help` all work
 
 ## Test breakdown
 | Path                            | Tests | Focus                                                              |
 |---------------------------------|-------|--------------------------------------------------------------------|
-| tests/bot                       | 105   | player (state machine, seq race, not-ready guards), tracker, milestones (checker + announcer), scheduler + drain, config, presence, main helpers (startup retry) |
+| tests/bot                       | 110   | player (state machine, seq race, not-ready guards), tracker, milestones (checker + announcer + now playing), scheduler + drain, config, presence, main helpers (startup retry) |
 | tests/dashboard                 | 63    | OAuth flow, session signing, queries, control queue, all routes    |
 | tests/db                        | 16    | schema, migrations, bot_state kv, WAL                              |
 | tests/file_provider             | 51    | ProviderDB, LRU cache, LocalProvider, service + concurrency        |
