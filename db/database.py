@@ -106,10 +106,12 @@ class Database:
             return self._conn.executemany(sql, seq_of_params)
 
     def fetchone(self, sql: str, params: tuple | dict = ()) -> sqlite3.Row | None:
-        return self.execute(sql, params).fetchone()
+        with self._lock:
+            return self._conn.execute(sql, params).fetchone()
 
     def fetchall(self, sql: str, params: tuple | dict = ()) -> list[sqlite3.Row]:
-        return self.execute(sql, params).fetchall()
+        with self._lock:
+            return self._conn.execute(sql, params).fetchall()
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Cursor]:
