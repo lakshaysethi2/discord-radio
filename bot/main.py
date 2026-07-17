@@ -132,14 +132,28 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
     )
 
     async def _advance_and_announce(_player: Player, finished_track) -> None:
-        """on_finish: mark played, ask for next, start it, repost embed."""
-        try:
+        """on_finish: mark played, ask for next, start it, repost embed.
+
+        Retries with backoff on provider failure — the alternative is the bot
+        going silent forever after one transient error.
+        """
+        # Best-effort: mark_played is non-critical.
+        with contextlib.suppress(Exception):
             await provider.mark_played(finished_track.track_id)
-            nxt = await provider.next()
-            await now_playing.post_or_replace(nxt)
-            await _player.start(nxt)
-        except Exception:
-            log.exception("failed to advance to next track")
+
+        backoff = 1.0
+        for attempt in range(1, 11):
+            try:
+                nxt = await provider.next()
+                await _player.start(nxt)
+                with contextlib.suppress(Exception):
+                    await now_playing.post_or_replace(nxt)
+                return
+            except Exception as exc:
+                log.warning("advance attempt %d failed: %s", attempt, exc)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60.0)
+        log.error("giving up on advancing after 10 attempts — bot will be silent")
 
     @client.event
     async def on_ready():

@@ -179,14 +179,24 @@ class Scheduler:
         except asyncio.CancelledError:
             pass
 
-    async def drain_commands(self) -> int:
-        """Execute any pending dashboard_commands rows. Returns count run."""
+    async def drain_commands(self, *, per_command_timeout: float = 30.0) -> int:
+        """Execute any pending dashboard_commands rows. Returns count run.
+
+        Each command is wrapped in a timeout so one hanging command doesn't
+        block the whole poll loop.
+        """
         if self.command_handler is None:
             return 0
         pending = cmd_queue.pending(self.db)
         for row in pending:
             try:
-                result = await self.command_handler(row.command, row.payload)
+                result = await asyncio.wait_for(
+                    self.command_handler(row.command, row.payload),
+                    timeout=per_command_timeout,
+                )
+            except TimeoutError:
+                result = f"error: timed out after {per_command_timeout}s"
+                log.warning("command %s (%s) timed out", row.command_id, row.command)
             except Exception as exc:
                 result = f"error: {exc}"
                 log.exception("command %s (%s) failed", row.command_id, row.command)

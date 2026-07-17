@@ -107,3 +107,11 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [ ] SSE-driven live dashboard instead of full refresh
 - [ ] Discord slash commands mirroring dashboard controls
 - [ ] Prometheus metrics endpoint
+
+## Post-implementation review items (added iter 10)
+- [ ] End-to-end integration test: spin up file-provider + fake voice + dashboard together
+- [ ] Verify Docker build actually succeeds locally (needs Docker in the sandbox — deferred to CI)
+- [ ] Add graceful handling in the bot when the file provider is fully down at startup (retry loop)
+- [ ] `MilestoneAnnouncer.check_and_announce` swallows errors — add rate-limiting so we don't spam
+- [ ] Consider a `/health` endpoint on the dashboard for the compose healthcheck (currently pings `/login`)
+- [ ] Session cookie `SameSite=lax` — dashboard actions require CSRF token already so fine, but document

@@ -168,11 +168,17 @@ class Player:
         track = self.current_track
         if cb is None or track is None:
             return
-        # Schedule the async finish callback on the bot's event loop.
+        # Bail out cleanly if the loop is closed (shutdown mid-track). Building
+        # the coroutine only after the check means we don't leak an
+        # unawaited coroutine.
+        if self.loop.is_closed():
+            return
+        coro = cb(self, track)
         try:
-            asyncio.run_coroutine_threadsafe(cb(self, track), self.loop)
-        except RuntimeError as err:  # pragma: no cover — loop closed
+            asyncio.run_coroutine_threadsafe(coro, self.loop)
+        except RuntimeError as err:  # pragma: no cover — loop closed between check & schedule
             log.warning("could not schedule on_finish: %s", err)
+            coro.close()
 
     async def pause(self) -> None:
         """Stop audio, keep the position for later resume."""

@@ -70,3 +70,17 @@ class TestDrainCommands:
         commands.enqueue(db, command="skip", requested_by=None, payload={"reason": "test"})
         await s.drain_commands()
         assert seen == [{"reason": "test"}]
+
+    async def test_hanging_command_times_out(self, db: Database) -> None:
+        import asyncio
+
+        async def handler(cmd: str, payload: dict | None) -> str:
+            await asyncio.sleep(10)
+            return "ok"
+
+        s = Scheduler(db=db, tracker=SessionTracker(db), command_handler=handler)
+        commands.enqueue(db, command="skip", requested_by=None)
+        await s.drain_commands(per_command_timeout=0.05)
+        row = commands.recent(db)[0]
+        assert row.result is not None
+        assert "timed out" in row.result

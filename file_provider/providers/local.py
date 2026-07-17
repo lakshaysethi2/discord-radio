@@ -39,7 +39,12 @@ class LocalProvider(BaseProvider):
                 continue
             if path.suffix.lower() not in AUDIO_EXTS:
                 continue
-            rel = path.relative_to(self.media_root)
+            try:
+                # Guard against symlinks pointing outside the root.
+                rel = path.resolve().relative_to(self.media_root.resolve())
+            except ValueError:
+                log.debug("skipping %s: outside media root", path)
+                continue
             try:
                 size = path.stat().st_size
             except OSError:
@@ -54,7 +59,13 @@ class LocalProvider(BaseProvider):
         return tracks
 
     def ensure_cached(self, source_ref: str, target_path: Path) -> Path:
-        src = self.media_root / source_ref
+        # Reject source_refs trying to escape via .. — defence in depth even
+        # though source_refs come from our own DB.
+        src = (self.media_root / source_ref).resolve()
+        try:
+            src.relative_to(self.media_root.resolve())
+        except ValueError as exc:
+            raise ProviderFetchError(f"source_ref {source_ref!r} escapes media root") from exc
         if not src.exists():
             raise ProviderFetchError(f"local file missing: {src}")
 
