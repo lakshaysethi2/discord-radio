@@ -1,0 +1,26 @@
+# Bot + Dashboard shared requirements
+# Install with: pip install -r requirements.txt
+
+# --- Discord bot ---
+discord.py>=2.4,<3
+PyNaCl>=1.5  # voice encryption
+
+# --- Web dashboard ---
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1
+jinja2>=3.1,<4
+itsdangerous>=2.1,<3  # signed session cookies
+authlib>=1.3,<2      # Discord OAuth2
+
+# --- HTTP client (bot -> file provider, dashboard -> Discord) ---
+httpx>=0.27,<1
+
+# --- Config ---
+python-dotenv>=1.0,<2
+
+# --- Test/dev (kept in one file for the sandboxed CI) ---
+pytest>=8,<9
+pytest-asyncio>=0.23,<1
+respx>=0.21,<1
+ruff>=0.5,<1
+coverage>=7,<8
