@@ -131,6 +131,18 @@ refresh-playlist:  ## Tell the file-provider to rescan its backends
 	$(COMPOSE) exec file-provider \
 	  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8001/refresh', data=b'', timeout=60).read().decode())"
 
+skip:  ## Skip the currently playing track
+	$(COMPOSE) exec bot \
+	  python -c "from db.database import Database; from dashboard.commands import enqueue; enqueue(Database('/data/tv.db'), command='skip', requested_by='CLI'); print('Queued skip command')"
+
+pause:  ## Pause playback
+	$(COMPOSE) exec bot \
+	  python -c "from db.database import Database; from dashboard.commands import enqueue; enqueue(Database('/data/tv.db'), command='pause', requested_by='CLI'); print('Queued pause command')"
+
+resume:  ## Resume/play playback
+	$(COMPOSE) exec bot \
+	  python -c "from db.database import Database; from dashboard.commands import enqueue; enqueue(Database('/data/tv.db'), command='resume', requested_by='CLI'); print('Queued resume command')"
+
 telegram-login: env build  ## Interactive Telethon first-run auth
 	$(COMPOSE) run --rm file-provider python -c "\
 from file_provider.config import load; \
