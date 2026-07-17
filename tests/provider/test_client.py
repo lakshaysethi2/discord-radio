@@ -109,6 +109,22 @@ async def test_health_returns_dict(client: FileProviderClient) -> None:
 
 
 @respx.mock
+async def test_get_by_id(client: FileProviderClient) -> None:
+    respx.get(f"{BASE}/tracks/abc123").mock(return_value=httpx.Response(200, json=TRACK_JSON))
+    async with client as fp:
+        t = await fp.get_by_id("abc123")
+    assert t.track_id == "abc123"
+
+
+@respx.mock
+async def test_get_by_id_404_raises(client: FileProviderClient) -> None:
+    respx.get(f"{BASE}/tracks/nope").mock(return_value=httpx.Response(404))
+    async with client as fp:
+        with pytest.raises(ProviderError):
+            await fp.get_by_id("nope")
+
+
+@respx.mock
 async def test_mark_played_swallows_404(client: FileProviderClient) -> None:
     respx.post(f"{BASE}/tracks/abc/played").mock(return_value=httpx.Response(404))
     async with client as fp:

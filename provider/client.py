@@ -194,6 +194,10 @@ class FileProviderClient:
         except ValueError as exc:
             raise ProviderError("non-JSON /health response") from exc
 
+    async def get_by_id(self, track_id: str) -> TrackResponse:
+        """Force-fetch a specific track by id (used by pause/resume)."""
+        return await self._get_track(f"/tracks/{track_id}")
+
     async def mark_played(self, track_id: str) -> None:
         """Tell the provider a track finished (may be used for pre-fetch/stats)."""
         resp = await self._request("POST", f"/tracks/{track_id}/played")
