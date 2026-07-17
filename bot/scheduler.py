@@ -98,6 +98,7 @@ class Scheduler:
         db: Database,
         tracker: SessionTracker,
         milestones: MilestoneAnnouncer | None = None,
+        per_guild_announcers: dict[str, MilestoneAnnouncer] | None = None,
         checkpoint_interval_seconds: int = 3600,
         monthly_check_interval_seconds: int = 3600,
         command_poll_interval_seconds: int = 2,
@@ -106,8 +107,14 @@ class Scheduler:
         self.db = db
         self.tracker = tracker
         self.milestones = milestones
-        # For pure-logic paths (tests, dashboard). Announcer wraps this.
-        self._checker = MilestoneChecker(db) if milestones is None else milestones.checker
+        # When the bot serves multiple servers, each server has its own
+        # announcer (its own text channel). Keyed by guild_id. Falls back to
+        # the single `milestones` announcer for single-server / test setups.
+        self.per_guild_announcers: dict[str, MilestoneAnnouncer] = per_guild_announcers or {}
+        # For pure-logic paths (no announcer wired up at all) we still flip
+        # the milestone flags so the DB stays consistent. Only needed when
+        # both `milestones` and `per_guild_announcers` are absent.
+        self._checker = MilestoneChecker(db) if milestones is None else None
         self.checkpoint_interval_seconds = checkpoint_interval_seconds
         self.monthly_check_interval_seconds = monthly_check_interval_seconds
         self.command_poll_interval_seconds = command_poll_interval_seconds
@@ -138,9 +145,9 @@ class Scheduler:
                     n = self.tracker.checkpoint_open_sessions()
                     if n:
                         log.info("checkpointed %d open sessions", n)
-                    # After checkpoints, check milestones for everyone with an open session.
-                    for row in self.tracker.open_sessions():
-                        await self._maybe_announce(row["user_id"])
+                    # After checkpoints, check milestones for everyone with an
+                    # open session — routed to that session's own server.
+                    await self._announce_open_sessions()
                 except Exception:
                     log.exception("checkpoint loop iteration failed")
         except asyncio.CancelledError:
@@ -160,8 +167,21 @@ class Scheduler:
         except asyncio.CancelledError:
             pass
 
-    async def _maybe_announce(self, user_id: str) -> None:
-        if self.milestones is not None:
+    async def _announce_open_sessions(self) -> None:
+        """Route milestone checks to the correct server for every open session.
+
+        ``open_sessions()`` returns ``sqlite3.Row`` objects, which support
+        subscripting (``row["guild_id"]``) but not ``.get()`` — so we index
+        directly.
+        """
+        for row in self.tracker.open_sessions():
+            await self._maybe_announce(row["user_id"], row["guild_id"])
+
+    async def _maybe_announce(self, user_id: str, guild_id: str = "") -> None:
+        announcer = self.per_guild_announcers.get(guild_id) if guild_id else None
+        if announcer is not None:
+            await announcer.check_and_announce(user_id)
+        elif self.milestones is not None:
             await self.milestones.check_and_announce(user_id)
         else:
             # No announcer wired up (tests) — still flip the flags so the DB

@@ -109,12 +109,19 @@ class Player:
         state: BotState,
         loop: asyncio.AbstractEventLoop,
         source_factory: FFmpegSourceFactory = default_ffmpeg_source,
+        persist_pause_state: bool = True,
     ) -> None:
         self.voice_client = voice_client
         self.provider = provider
         self.state = state
         self.loop = loop
         self.source_factory = source_factory
+        # When the bot serves multiple servers, each server owns its own
+        # Player but they share one global playback cursor. In that mode we
+        # must NOT let one server's pause/resume flip the *global* `is_paused`
+        # flag — the orchestrator manages that. Single-server use keeps the
+        # historical behaviour (persist=True).
+        self.persist_pause_state = persist_pause_state
         self.clock = ElapsedClock()
         self.current_track: TrackResponse | None = None
         self._on_finish: FinishCallback | None = None
@@ -162,9 +169,10 @@ class Player:
         self.clock.start(resume_from=seek_seconds)
 
         self.state.current_track_id = track.track_id
-        self.state.playback_position_seconds = int(seek_seconds)
         self.state.playlist_position = track.playlist_position
-        self.state.is_paused = False
+        if self.persist_pause_state:
+            self.state.playback_position_seconds = int(seek_seconds)
+            self.state.is_paused = False
 
         # `after` runs on FFmpeg's cleanup thread — schedule the callback back
         # onto the main asyncio loop. The captured `my_seq` lets us discard
@@ -214,8 +222,9 @@ class Player:
             if self.voice_client.is_playing():
                 self.voice_client.stop()
             elapsed = self.clock.stop()
-            self.state.playback_position_seconds = int(elapsed)
-            self.state.is_paused = True
+            if self.persist_pause_state:
+                self.state.playback_position_seconds = int(elapsed)
+                self.state.is_paused = True
 
     async def resume(self) -> None:
         """Resume playback of the current track at the saved position.
@@ -237,6 +246,8 @@ class Player:
                 log.warning("resume: track %s not ready", track_id)
                 return
             await self._start_locked(track, seek_seconds=resume_at)
+            if self.persist_pause_state:
+                self.state.is_paused = False
 
     async def set_volume(self, volume_percent: int) -> int:
         """Persist global gain and restart the active source at its exact position."""

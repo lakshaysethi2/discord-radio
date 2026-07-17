@@ -43,7 +43,7 @@ Three independently-restartable services:
 | Service        | What it does                                              |
 | -------------- | --------------------------------------------------------- |
 | `file-provider`| Owns the playlist + on-disk cache + backend fallback logic (Telethon MTProto, local FS, more coming). Serves audio file paths to the bot over HTTP. |
-| `bot`          | discord.py voice bot. Joins the configured voice channel, streams audio via FFmpeg, tracks who's watching, checkpoints hourly, announces milestones. |
+| `bot`          | discord.py voice bot. Joins every *enabled* server's voice channel (multi-server), streams the shared radio via FFmpeg, tracks who's watching per server, checkpoints hourly, announces milestones. |
 | `dashboard`    | Admin web UI (FastAPI + Jinja2 + Discord OAuth2). Read-only pages + skip/pause/resume controls that go through a shared SQLite command queue. |
 
 ---
@@ -127,9 +127,9 @@ The most important ones:
 | Variable                     | Purpose                                                      |
 | ---------------------------- | ------------------------------------------------------------ |
 | `DISCORD_BOT_TOKEN`          | Bot token from https://discord.com/developers/applications   |
-| `DISCORD_GUILD_ID`           | Numeric guild id (one bot instance = one guild)              |
-| `DISCORD_VOICE_CHANNEL_ID`   | Voice channel the bot joins                                  |
-| `DISCORD_TEXT_CHANNEL_ID`    | Channel for Now Playing + milestone announcements            |
+| `DISCORD_GUILD_ID`           | **Optional** bootstrap guild id. Seeds the first server as enabled on first boot; the dashboard (`/servers`) is the source of truth thereafter. Leave blank to configure everything from the dashboard. |
+| `DISCORD_VOICE_CHANNEL_ID`   | **Optional** bootstrap voice channel for that guild          |
+| `DISCORD_TEXT_CHANNEL_ID`    | **Optional** bootstrap text channel for Now Playing + milestones |
 | `ADMIN_USER_IDS`             | Comma-separated Discord user ids allowed into the dashboard  |
 | `FILE_PROVIDER_ORDER`        | Comma-separated backend order: `local`, `archive`, `telegram` |
 | `ARCHIVE_ORG_ITEMS`          | Comma-separated Internet Archive item ids (public, no auth)  |
@@ -148,9 +148,33 @@ dashboard/      FastAPI + Jinja2 dashboard, Discord OAuth2, control queue
 db/             Shared SQLite layer + schema
 provider/       Async HTTP client used by the bot to talk to the provider
 file_provider/  Standalone FastAPI service: Telethon + Local providers + LRU cache
-tests/          pytest suite (>220 tests, no live Discord/Telegram needed)
+tests/          pytest suite (>340 tests, no live Discord/Telegram needed)
 docs/           Backend setup guides
 ```
+
+## Multi-server (per-guild) management
+
+The single bot can serve **many Discord servers at once**. The radio has one
+shared playback cursor — every enabled server hears the same track — but each
+server keeps its own voice connection, *Now Playing* embed, and milestone
+announcements.
+
+Admins manage everything from the dashboard's **Servers** page (`/servers`):
+
+* Toggle whether the bot is **allowed to speak** in a server.
+* Pick the **voice channel** it joins.
+* Pick the **text channel** it posts *Now Playing* + milestones to.
+
+On startup the bot discovers every server it belongs to (and caches their
+channels) and joins each *enabled* server that has both channels selected. The
+legacy `DISCORD_GUILD_ID` / `DISCORD_VOICE_CHANNEL_ID` / `DISCORD_TEXT_CHANNEL_ID`
+env vars still work as a one-time bootstrap — they seed the first server as
+enabled on first boot, after which the dashboard is the source of truth.
+
+> Changes made in the dashboard take effect the next time the bot connects
+> (it reads `guild_configs` on `on_ready`). Restart the bot after saving.
+
+See `docs/multi-server.md` for the full walkthrough.
 
 ---
 

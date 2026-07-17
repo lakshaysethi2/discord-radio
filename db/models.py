@@ -97,6 +97,34 @@ SCHEMA: tuple[str, ...] = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_dashboard_commands_pending ON dashboard_commands(executed_at) WHERE executed_at IS NULL",
+    # ---- guild_configs (multi-server management; §servers) ----------------
+    # One row per Discord server the bot belongs to. Admins toggle `enabled`
+    # and pick the voice/text channels from the dashboard. The bot discovers
+    # rows here on startup and joins every *enabled* guild that has both
+    # channel ids populated.
+    """
+    CREATE TABLE IF NOT EXISTS guild_configs (
+        guild_id          TEXT PRIMARY KEY,
+        guild_name        TEXT,
+        enabled           BOOLEAN DEFAULT 0,
+        voice_channel_id  TEXT,
+        text_channel_id   TEXT,
+        updated_at        DATETIME
+    )
+    """,
+    # ---- guild_channels (cached channel lists for dashboard dropdowns) -----
+    # Refreshed from Discord on every `on_ready` so the dashboard can render
+    # <select> dropdowns without calling Discord itself.
+    """
+    CREATE TABLE IF NOT EXISTS guild_channels (
+        guild_id     TEXT NOT NULL,
+        channel_id   TEXT NOT NULL,
+        channel_name TEXT,
+        channel_type TEXT,  -- 'voice' | 'text'
+        parent_id    TEXT,  -- for a text chat nested under a voice channel, the voice channel's id
+        PRIMARY KEY (guild_id, channel_id)
+    )
+    """,
 )
 
 
