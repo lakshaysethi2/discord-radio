@@ -170,6 +170,43 @@ class Service:
                 raise KeyError(track_id)
             return self._ensure_and_wrap(row)
 
+    def list_all(
+        self, *, offset: int = 0, limit: int = 100, search: str | None = None
+    ) -> tuple[list[TrackPayload], int]:
+        """Return a metadata-only track page and total; never downloads files."""
+        with self._lock:
+            rows = self.db.list_all(offset=offset, limit=limit, search=search)
+            total = self.db.count_tracks(search=search)
+            payloads = [self._metadata_payload(row) for row in rows]
+            return payloads, total
+
+    def jump_to(self, track_id: str) -> TrackPayload:
+        """Set the playlist cursor and fetch the selected track for immediate play."""
+        with self._lock:
+            position = self.db.position_of(track_id)
+            if position is None:
+                raise KeyError(track_id)
+            self.db.set_cursor(position)
+            return self.current()
+
+    def current_track_id(self) -> str | None:
+        with self._lock:
+            row = self.db.track_at(self.db.get_cursor())
+            return row["track_id"] if row else None
+
+    def _metadata_payload(self, row) -> TrackPayload:
+        cached = self.cache.get(row["track_id"])
+        return TrackPayload(
+            track_id=row["track_id"],
+            title=row["title"],
+            duration_seconds=int(row["duration_seconds"] or 0),
+            local_path=str(cached) if cached else "",
+            provider_used=row["provider"],
+            playlist_position=self.db.position_of(row["track_id"]) or 0,
+            ready=cached is not None,
+            has_video=bool(row["has_video"]),
+        )
+
     def mark_played(self, track_id: str) -> None:
         # Refresh LRU timestamp so the just-played file doesn't get evicted
         # first if it appears again soon.
@@ -227,18 +264,7 @@ class Service:
 
     def _position_of(self, track_id: str) -> int:
         """Return the 0-indexed position of `track_id` in the sorted playlist."""
-        row = self.db.fetchone(
-            "SELECT sort_order FROM tracks WHERE track_id=?",
-            (track_id,),
-        )
-        if row is None:
-            return 0
-        n_row = self.db.fetchone(
-            "SELECT COUNT(*) AS n FROM tracks "
-            "WHERE sort_order < ? OR (sort_order = ? AND track_id < ?)",
-            (row["sort_order"], row["sort_order"], track_id),
-        )
-        return int(n_row["n"]) if n_row else 0
+        return self.db.position_of(track_id) or 0
 
     # -------------------------------------------------------- pre-fetch bg
     def _kick_prefetch(self) -> None:

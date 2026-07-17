@@ -72,3 +72,10 @@ Last updated: **iteration 21** — fixed SQLite connection concurrency / cursor 
 3. `make test` — runs the 263 tests inside a container.
 4. `make lint` — ruff check + format check inside a container.
 5. Check `PLAN.md` for outstanding items (all core work done; only nice-to-haves remain).
+
+## Queue playlist delivery — 2026-07-17
+- Recovered and implemented the previously unpushed queue work on the current Arena branch.
+- `/queue` now pages through the complete playlist (50 per page by default), supports title search, highlights the persisted active track, offers a jump-to-active shortcut, shows media/cache status, and queues CSRF-protected `play_track` actions.
+- File-provider adds metadata-only `GET /tracks` and fetch-on-select `POST /jump/{track_id}`. The bot consumes `play_track` through the shared SQLite command queue.
+- Review fix: dashboard obtains active-track state from its shared bot SQLite DB rather than provider `/current`, so merely browsing the playlist never downloads uncached media.
+- Verification in this sandbox (Docker unavailable): `.venv/bin/python -m pytest -q` → **313 passed**; `ruff check .` clean; `ruff format --check .` clean.

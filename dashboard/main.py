@@ -333,17 +333,80 @@ def create_app(
 
     @app.get("/queue", response_class=HTMLResponse)
     async def queue_page(
-        request: Request, user: auth.SessionUser = Depends(_require_admin)
+        request: Request,
+        user: auth.SessionUser = Depends(_require_admin),
+        page: int = Query(1, ge=1, le=10_000),
+        page_size: int = Query(50, ge=10, le=500),
+        q: str | None = Query(None),
     ) -> HTMLResponse:
+        """Paginated playlist with search and a direct play-now control."""
         tracks: list = []
+        total = 0
         error: str | None = None
+        current_track_id: str | None = None
+        current_page: int | None = None
+        search = (q or "").strip() or None
         try:
             fp = await _get_provider()
-            tracks = await fp.peek(20)
+            tracks, total = await fp.list_tracks(
+                offset=(page - 1) * page_size, limit=page_size, search=search
+            )
         except Exception as exc:
             error = f"could not reach file provider: {exc}"
             log.warning("queue fetch failed: %s", exc)
-        return _render(request, "queue.html", {"user": user, "tracks": tracks, "error": error})
+
+        # The bot already persists its active track and position in shared
+        # SQLite. Reading it here avoids a provider /current request, which
+        # intentionally fetches uncached media and would make a browse-only
+        # page unexpectedly download a large track.
+        current = queries.now_playing(app.state.db)
+        current_track_id = current.track_id
+        if current_track_id:
+            current_page = (current.playlist_position // page_size) + 1
+        sess = _get_session(request) or {}
+        return _render(
+            request,
+            "queue.html",
+            {
+                "user": user,
+                "tracks": tracks,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": max(1, (total + page_size - 1) // page_size),
+                "q": q or "",
+                "current_track_id": current_track_id,
+                "current_page": current_page,
+                "error": error,
+                "csrf": sess.get("csrf", ""),
+                "command_flash": request.query_params.get("flash"),
+            },
+        )
+
+    @app.post("/queue/play")
+    async def queue_play(
+        request: Request,
+        track_id: str = Form(...),
+        csrf: str = Form(""),
+        page: int = Form(1),
+        q: str = Form(""),
+        user: auth.SessionUser = Depends(_require_admin),
+    ) -> Response:
+        sess = _get_session(request) or {}
+        if not sess.get("csrf") or not hmac.compare_digest(sess["csrf"], csrf):
+            raise HTTPException(status_code=403, detail="invalid CSRF token")
+        commands.enqueue(
+            app.state.db,
+            command="play_track",
+            requested_by=user.user_id,
+            payload={"track_id": track_id},
+        )
+        from urllib.parse import urlencode
+
+        params = {"page": page, "q": q, "flash": "Playing selected track"}
+        return RedirectResponse(
+            "/queue?" + urlencode({k: v for k, v in params.items() if v}), status_code=303
+        )
 
     # ---- Controls ----
     @app.post("/controls")

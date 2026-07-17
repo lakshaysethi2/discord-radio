@@ -190,3 +190,17 @@ def test_base_url_strips_trailing_slash() -> None:
 def test_max_retries_min_one() -> None:
     c = FileProviderClient(BASE, max_retries=0)
     assert c.max_retries == 1
+
+
+@respx.mock
+async def test_list_tracks_and_jump_to(client: FileProviderClient) -> None:
+    respx.get(f"{BASE}/tracks").mock(
+        return_value=httpx.Response(200, json={"items": [TRACK_JSON], "total": 1})
+    )
+    respx.post(f"{BASE}/jump/abc123").mock(return_value=httpx.Response(200, json=TRACK_JSON))
+    async with client as fp:
+        items, total = await fp.list_tracks(search="stillness")
+        jumped = await fp.jump_to("abc123")
+    assert total == 1
+    assert items[0].track_id == "abc123"
+    assert jumped.track_id == "abc123"

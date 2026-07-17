@@ -1,32 +1,23 @@
 {% extends "base.html" %}
-{% block title %}Queue — TV Bot{% endblock %}
+{% block title %}Playlist — TV Bot{% endblock %}
 {% block content %}
-  <h1 class="text-lg font-semibold mb-4">Upcoming tracks</h1>
-  {% if error %}
-    <p class="text-sm text-amber-400 mb-4">{{ error }}</p>
-  {% endif %}
-  <div class="rounded-lg bg-slate-900 border border-slate-800 overflow-hidden">
-    <table class="w-full text-sm">
-      <thead class="text-xs uppercase text-slate-400">
-        <tr>
-          <th class="text-left px-4 py-2 w-16">#</th>
-          <th class="text-left px-4 py-2">Title</th>
-          <th class="text-left px-4 py-2 w-32">Duration</th>
-          <th class="text-left px-4 py-2 w-24">Cached?</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for t in tracks %}
-          <tr class="border-t border-slate-800/60">
-            <td class="px-4 py-2 tabular-nums text-slate-400">{{ t.playlist_position + 1 }}</td>
-            <td class="px-4 py-2">{{ t.title }}</td>
-            <td class="px-4 py-2 tabular-nums">{{ t.duration_seconds | hms }}</td>
-            <td class="px-4 py-2">{% if t.ready %}<span class="text-emerald-400">✓</span>{% else %}<span class="text-slate-500">—</span>{% endif %}</td>
-          </tr>
-        {% else %}
-          <tr><td colspan="4" class="px-4 py-6 text-center text-slate-500">No tracks in the queue.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+<div class="flex flex-wrap items-center gap-3 mb-4">
+  <h1 class="text-lg font-semibold">Playlist</h1>
+  <span class="text-xs text-slate-500 tabular-nums">{{ total }} track{{ '' if total == 1 else 's' }}{% if q %} matching "{{ q }}"{% endif %}</span>
+  <div class="grow"></div>
+  <form action="/queue" method="get" class="flex gap-2 text-sm">
+    <input type="text" name="q" value="{{ q }}" placeholder="Search title…" class="px-3 py-1.5 rounded bg-slate-900 border border-slate-800">
+    <input type="hidden" name="page_size" value="{{ page_size }}">
+    <button class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Search</button>
+    {% if q %}<a href="/queue?page_size={{ page_size }}" class="self-center text-slate-400">clear</a>{% endif %}
+  </form>
+</div>
+{% if error %}<div class="p-3 mb-4 text-sm text-red-200 bg-red-900/30 border border-red-500/40 rounded-lg">{{ error }}</div>{% endif %}
+{% if command_flash %}<div class="p-3 mb-4 text-sm text-emerald-200 bg-emerald-900/30 border border-emerald-500/40 rounded-lg">{{ command_flash }}</div>{% endif %}
+{% if current_page and current_page != page %}<a href="/queue?page={{ current_page }}&page_size={{ page_size }}" class="block mb-3 text-xs text-slate-400 hover:text-white">⏱ Jump to currently playing (page {{ current_page }})</a>{% endif %}
+<div class="rounded-lg bg-slate-900 border border-slate-800 overflow-hidden"><table class="w-full text-sm"><thead class="text-xs uppercase text-slate-400"><tr><th class="text-left px-4 py-2 w-16">#</th><th class="text-left px-4 py-2">Title</th><th class="text-left px-4 py-2">Type</th><th class="text-left px-4 py-2">Duration</th><th class="text-left px-4 py-2">Cached</th><th></th></tr></thead><tbody>
+{% for t in tracks %}{% set is_current = current_track_id and t.track_id == current_track_id %}<tr class="border-t border-slate-800/60 {% if is_current %}bg-indigo-950/40{% endif %}"><td class="px-4 py-2 tabular-nums text-slate-400">{% if is_current %}▶{% endif %} {{ t.playlist_position + 1 }}</td><td class="px-4 py-2 truncate max-w-md" title="{{ t.title }}">{{ t.title }} <span class="text-xs text-slate-600">{{ t.provider_used }}</span></td><td class="px-4 py-2 text-xs">{% if t.has_video %}<span class="text-purple-400">🎥 video</span>{% else %}<span class="text-slate-500">🎵 audio</span>{% endif %}</td><td class="px-4 py-2">{{ t.duration_seconds | hms }}</td><td class="px-4 py-2">{% if t.ready %}<span class="text-emerald-400">✓</span>{% else %}<span class="text-slate-500">—</span>{% endif %}</td><td class="px-4 py-2 text-right">{% if is_current %}<span class="text-xs text-indigo-300">now playing</span>{% else %}<form action="/queue/play" method="post"><input type="hidden" name="track_id" value="{{ t.track_id }}"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="page" value="{{ page }}"><input type="hidden" name="q" value="{{ q }}"><button class="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs">▶ Play now</button></form>{% endif %}</td></tr>
+{% else %}<tr><td colspan="6" class="px-4 py-6 text-center text-slate-500">{% if q %}No tracks match "{{ q }}".{% else %}No tracks in the playlist.{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>
+{% if total_pages > 1 %}<div class="flex justify-between mt-4 text-xs text-slate-400"><span>Page {{ page }} of {{ total_pages }}</span><div class="flex gap-1">{% if page > 1 %}<a href="?page={{ page-1 }}{% if q %}&q={{ q }}{% endif %}&page_size={{ page_size }}" class="px-2 py-1 rounded bg-slate-800">‹ prev</a>{% endif %}{% if page < total_pages %}<a href="?page={{ page+1 }}{% if q %}&q={{ q }}{% endif %}&page_size={{ page_size }}" class="px-2 py-1 rounded bg-slate-800">next ›</a>{% endif %}</div></div>{% endif %}
 {% endblock %}

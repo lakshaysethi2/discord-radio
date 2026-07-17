@@ -240,6 +240,45 @@ class ProviderDB:
             )
         return rows
 
+    def list_all(
+        self, *, offset: int = 0, limit: int = 100, search: str | None = None
+    ) -> list[sqlite3.Row]:
+        """Return a non-wrapping page of tracks in playlist order."""
+        offset = max(0, int(offset))
+        limit = max(1, min(int(limit), 1000))
+        if search:
+            return self.fetchall(
+                "SELECT * FROM tracks WHERE title LIKE ? "
+                "ORDER BY sort_order, track_id LIMIT ? OFFSET ?",
+                (f"%{search}%", limit, offset),
+            )
+        return self.fetchall(
+            "SELECT * FROM tracks ORDER BY sort_order, track_id LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+
+    def count_tracks(self, *, search: str | None = None) -> int:
+        """Return the number of tracks matching an optional title filter."""
+        if search:
+            row = self.fetchone(
+                "SELECT COUNT(*) AS n FROM tracks WHERE title LIKE ?", (f"%{search}%",)
+            )
+        else:
+            row = self.fetchone("SELECT COUNT(*) AS n FROM tracks")
+        return int(row["n"]) if row else 0
+
+    def position_of(self, track_id: str) -> int | None:
+        """Return a track's zero-based position in natural playlist order."""
+        row = self.fetchone("SELECT sort_order FROM tracks WHERE track_id=?", (track_id,))
+        if row is None:
+            return None
+        count = self.fetchone(
+            "SELECT COUNT(*) AS n FROM tracks "
+            "WHERE sort_order < ? OR (sort_order = ? AND track_id < ?)",
+            (row["sort_order"], row["sort_order"], track_id),
+        )
+        return int(count["n"]) if count else 0
+
     def upsert_tracks(self, tracks: list[dict]) -> tuple[int, int]:
         """Insert new tracks, update existing. Returns (added, updated)."""
         added = updated = 0

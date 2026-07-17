@@ -321,3 +321,25 @@ class TestLogout:
         # cookie deletion sends set-cookie with Max-Age=0
         setc = r.headers.get("set-cookie", "")
         assert "tvbot_session" in setc
+
+
+class TestQueuePlaylistControls:
+    def test_play_now_enqueues_track_command(
+        self, client: TestClient, admin_cookie: dict, db: Database
+    ) -> None:
+        response = client.post(
+            "/queue/play",
+            data={"track_id": "chosen", "csrf": "csrf-test", "page": "2", "q": "abc"},
+            cookies=admin_cookie,
+        )
+        assert response.status_code == 303
+        assert "page=2" in response.headers["location"]
+        row = db.fetchone("SELECT command, payload FROM dashboard_commands")
+        assert row["command"] == "play_track"
+        assert '"chosen"' in row["payload"]
+
+    def test_play_now_requires_csrf(self, client: TestClient, admin_cookie: dict) -> None:
+        response = client.post(
+            "/queue/play", data={"track_id": "chosen", "csrf": "wrong"}, cookies=admin_cookie
+        )
+        assert response.status_code == 403

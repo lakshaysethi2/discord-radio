@@ -200,6 +200,38 @@ class FileProviderClient:
         """Force-fetch a specific track by id (used by pause/resume)."""
         return await self._get_track(f"/tracks/{track_id}")
 
+    async def list_tracks(
+        self, *, offset: int = 0, limit: int = 100, search: str | None = None
+    ) -> tuple[list[TrackResponse], int]:
+        """List a page of tracks without forcing downloads."""
+        params: dict[str, Any] = {"offset": offset, "limit": limit}
+        if search:
+            params["q"] = search
+        resp = await self._request("GET", "/tracks", params=params)
+        if resp.status_code != 200:
+            raise ProviderError(f"GET /tracks -> HTTP {resp.status_code}: {resp.text[:200]}")
+        try:
+            data = resp.json()
+            if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+                raise TypeError("missing items")
+            return [TrackResponse.from_json(item) for item in data["items"]], int(
+                data.get("total") or 0
+            )
+        except (TypeError, ValueError) as exc:
+            raise ProviderError("malformed /tracks response") from exc
+
+    async def jump_to(self, track_id: str) -> TrackResponse:
+        """Move the provider cursor to a selected track and fetch it."""
+        resp = await self._request("POST", f"/jump/{track_id}")
+        if resp.status_code != 200:
+            raise ProviderError(
+                f"POST /jump/{track_id} -> HTTP {resp.status_code}: {resp.text[:200]}"
+            )
+        try:
+            return TrackResponse.from_json(resp.json())
+        except ValueError as exc:
+            raise ProviderError("non-JSON /jump response") from exc
+
     async def mark_played(self, track_id: str) -> None:
         """Tell the provider a track finished (may be used for pre-fetch/stats)."""
         resp = await self._request("POST", f"/tracks/{track_id}/played")
