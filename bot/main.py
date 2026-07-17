@@ -24,6 +24,7 @@ import contextlib
 import logging
 import signal
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import httpx
@@ -186,6 +187,86 @@ def sync_radio_state(
     return should_play
 
 
+async def apply_server_config(
+    *,
+    db: Database,
+    client: object,
+    stations: dict[str, Station],
+    per_guild_announcers: dict[str, MilestoneAnnouncer],
+    build_station: Callable[[object, object], Awaitable[Station | None]],
+    teardown_station: Callable[[Station], Awaitable[None]],
+    guild_id: str,
+    get_guild_config=guilds_db.get_guild_config,
+) -> str:
+    """Reconcile one guild's live station with its current DB config.
+
+    Called from the control-plane ``apply_server`` command so a dashboard
+    save takes effect immediately (connect / disconnect / re-point channels)
+    without restarting the bot. It is idempotent — if the live station
+    already matches the saved config it is left untouched.
+
+    ``build_station`` / ``teardown_station`` are injected by the running bot
+    (they wrap discord.py I/O), which keeps this function free of Discord
+    dependencies and straightforward to unit-test with fakes.
+    """
+
+    def _unregister(gid: str) -> None:
+        stations.pop(gid, None)
+        per_guild_announcers.pop(gid, None)
+
+    cfg = get_guild_config(db, guild_id)
+    guild = None
+    if guild_id:
+        with contextlib.suppress(Exception):
+            guild = client.get_guild(int(guild_id))
+    existing = stations.get(guild_id)
+
+    wants_on = (
+        cfg is not None
+        and cfg.enabled
+        and cfg.voice_channel_id is not None
+        and cfg.text_channel_id is not None
+    )
+
+    if not wants_on:
+        if existing is not None:
+            await teardown_station(existing)
+            _unregister(guild_id)
+            log.info("guild %s disabled — live station torn down", guild_id)
+        return "ok:disabled"
+
+    # --- Server should be live. ---
+    if existing is not None:
+        if str(existing.voice_channel_id) != str(cfg.voice_channel_id):
+            # Voice channel changed → reconnect from scratch.
+            await teardown_station(existing)
+            _unregister(guild_id)
+            existing = None
+        elif str(existing.text_channel_id) != str(cfg.text_channel_id):
+            # Only the *Now Playing* text channel changed — repoint the
+            # announcers in place, no voice reconnect required.
+            tid = int(cfg.text_channel_id)
+            existing.text_channel_id = tid
+            existing.now_playing.text_channel_id = tid
+            existing.milestones.text_channel_id = tid
+            if ann := per_guild_announcers.get(guild_id):
+                ann.text_channel_id = tid
+            log.info("guild %s: Now Playing channel updated to %s", guild_id, tid)
+            return "ok:text_channel_updated"
+
+    if existing is None:
+        if guild is None:
+            log.warning("guild %s not found — is the bot still invited?", guild_id)
+            return f"error: guild {guild_id} not found"
+        station = await build_station(guild, cfg)
+        if station is None:
+            return "error: voice connect failed"
+        stations[guild_id] = station
+        per_guild_announcers[guild_id] = station.milestones
+
+    return "ok:applied"
+
+
 def _init_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -285,6 +366,10 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
 
     tracker = SessionTracker(db=db, min_session_seconds=config.min_session_seconds)
 
+    # The running event loop. Defined here (not inside `on_ready`) so the
+    # nested `_build_station` can close over it when live-applying a server.
+    loop = asyncio.get_running_loop()
+
     # Populated in on_ready; referenced by the event handlers below.
     stations: dict[str, Station] = {}
     per_guild_announcers: dict[str, MilestoneAnnouncer] = {}
@@ -373,7 +458,123 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 return f"ok:{r.status_code}"
             except Exception as exc:
                 return f"error: {exc}"
+        if command == "apply_server":
+            # Dashboard pushed a new/changed server config — apply it live so
+            # the admin doesn't have to restart the bot.
+            gid = (payload or {}).get("guild_id")
+            if not gid:
+                return "error: apply_server requires payload {guild_id}"
+            result = await apply_server_config(
+                db=db,
+                client=client,
+                stations=stations,
+                per_guild_announcers=per_guild_announcers,
+                build_station=_build_station,
+                teardown_station=_teardown_station,
+                guild_id=gid,
+            )
+            # Keep the shared radio cursor in step with the new station set
+            # (e.g. a disable should freeze the clock if it was the only one).
+            sync_radio_state(stations, radio, state, admin_paused=admin_paused)
+            return result
         return f"error: unknown command {command!r}"
+
+    async def _build_station(guild, cfg) -> Station | None:
+        """Connect to a guild's configured voice channel and build a Station.
+
+        Returns the (listener-bootstrapped) ``Station`` or ``None`` if the
+        voice connection can't be established. The caller owns registration in
+        ``stations`` / ``per_guild_announcers`` so startup and live-apply share
+        a single registration point.
+        """
+        vc = guild.get_channel(int(cfg.voice_channel_id)) if cfg.voice_channel_id else None
+        if not isinstance(vc, discord.VoiceChannel):
+            log.warning(
+                "guild %s: voice channel %s missing/invalid — cannot start",
+                cfg.guild_id,
+                cfg.voice_channel_id,
+            )
+            return None
+        tc_id = int(cfg.text_channel_id) if cfg.text_channel_id else None
+
+        # Bounded retry — same as startup; a UDP-discovery timeout is reported
+        # once and fails, so retry a few times to ride out transient blips.
+        voice_client = None
+        for attempt in range(1, 4):
+            try:
+                voice_client = await vc.connect(reconnect=True, timeout=30.0)
+                break
+            except Exception as exc:  # pragma: no cover — network/permission edge case
+                log.warning(
+                    "guild %s: voice connect attempt %d/3 failed: %s",
+                    cfg.guild_id,
+                    attempt,
+                    exc,
+                )
+        if voice_client is None:
+            log.warning(
+                "guild %s: giving up on voice connection — bot will not serve "
+                "this server. Confirm Connect + Speak perms and UDP egress, "
+                "then re-apply the server in the dashboard.",
+                cfg.guild_id,
+            )
+            return None
+
+        player = Player(
+            voice_client=voice_client,
+            provider=provider,
+            state=state,
+            loop=loop,
+            persist_pause_state=False,
+        )
+        np_state = GuildScopedState(db, cfg.guild_id)
+        now_playing = NowPlaying(
+            client=client,
+            text_channel_id=tc_id,
+            state=np_state,
+            db=db,
+            guild_id=cfg.guild_id,
+        )
+        announcer = MilestoneAnnouncer(client=client, text_channel_id=tc_id, db=db)
+        station = Station(
+            guild_id=cfg.guild_id,
+            guild_name=cfg.guild_name or guild.name,
+            voice_channel=vc,
+            voice_channel_id=int(cfg.voice_channel_id),
+            text_channel_id=tc_id,
+            voice_client=voice_client,
+            player=player,
+            now_playing=now_playing,
+            milestones=announcer,
+        )
+        player.on_finish(_advance_and_announce)
+        listeners = _non_bot_members(vc)
+        station.listener_count = len(listeners)
+        if listeners:
+            station.is_paused = False
+            for member in listeners:
+                tracker.open_session(
+                    guild_id=station.guild_id,
+                    user_id=str(member.id),
+                    username=str(member),
+                    server_nickname=member.display_name,
+                    track_id=state.current_track_id,
+                )
+            await _resume_or_start(player, provider, state)
+            cur = player.current_track
+            if cur is not None:
+                await now_playing.post_or_replace(cur)
+        else:
+            station.is_paused = True
+            log.info("guild %s voice channel empty on startup — staying silent", cfg.guild_id)
+        return station
+
+    async def _teardown_station(station: Station) -> None:
+        """Stop playback and disconnect a live station (disable / rebuild)."""
+        with contextlib.suppress(Exception):
+            await station.player.stop_hard()
+        with contextlib.suppress(Exception):
+            await station.voice_client.disconnect(force=True)  # type: ignore[attr-defined]
 
     scheduler = Scheduler(
         db=db,
@@ -439,8 +640,6 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             return
         ready_done = True
 
-        loop = asyncio.get_running_loop()
-
         # 1. Discover every server we belong to + cache its channels so the
         #    dashboard can render <select> dropdowns without calling Discord.
         for guild in client.guilds:
@@ -489,95 +688,12 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             if guild is None:
                 log.warning("guild %s not found — is the bot still invited?", cfg.guild_id)
                 continue
-            vc = guild.get_channel(int(cfg.voice_channel_id)) if cfg.voice_channel_id else None
-            if not isinstance(vc, discord.VoiceChannel):
-                log.warning(
-                    "guild %s: voice channel %s missing/invalid — skipping",
-                    cfg.guild_id,
-                    cfg.voice_channel_id,
-                )
-                continue
-            tc_id = int(cfg.text_channel_id) if cfg.text_channel_id else None
-
-            # discord.py only auto-retries the voice handshake on websocket
-            # close. A UDP-discovery timeout (firewall/NAT blocking Discord
-            # voice egress, or the bot role lacking Connect/Speak) is reported
-            # once and fails, so retry a few times to ride out transient
-            # startup blips. Each attempt is bounded so a hard block can't hang
-            # startup forever.
-            voice_client = None
-            for attempt in range(1, 4):
-                try:
-                    voice_client = await vc.connect(reconnect=True, timeout=30.0)
-                    break
-                except Exception as exc:  # pragma: no cover — network/permission edge case
-                    log.warning(
-                        "guild %s: voice connect attempt %d/3 failed: %s",
-                        cfg.guild_id,
-                        attempt,
-                        exc,
-                    )
-            if voice_client is None:
+            station = await _build_station(guild, cfg)
+            if station is None:
                 voice_connect_failures += 1
-                log.warning(
-                    "guild %s: giving up on voice connection — bot will not serve "
-                    "this server this run. Confirm the bot role has Connect + Speak "
-                    "in the voice channel and that this host can reach Discord's "
-                    "voice servers over UDP, then restart the bot.",
-                    cfg.guild_id,
-                )
                 continue
-
-            player = Player(
-                voice_client=voice_client,
-                provider=provider,
-                state=state,
-                loop=loop,
-                persist_pause_state=False,
-            )
-            np_state = GuildScopedState(db, cfg.guild_id)
-            now_playing = NowPlaying(
-                client=client,
-                text_channel_id=tc_id,
-                state=np_state,
-                db=db,
-                guild_id=cfg.guild_id,
-            )
-            announcer = MilestoneAnnouncer(client=client, text_channel_id=tc_id, db=db)
-            station = Station(
-                guild_id=cfg.guild_id,
-                guild_name=cfg.guild_name or guild.name,
-                voice_channel=vc,
-                voice_channel_id=int(cfg.voice_channel_id),
-                text_channel_id=tc_id,
-                voice_client=voice_client,
-                player=player,
-                now_playing=now_playing,
-                milestones=announcer,
-            )
-            player.on_finish(_advance_and_announce)
             stations[cfg.guild_id] = station
-            per_guild_announcers[cfg.guild_id] = announcer
-
-            listeners = _non_bot_members(vc)
-            station.listener_count = len(listeners)
-            if listeners:
-                station.is_paused = False
-                for member in listeners:
-                    tracker.open_session(
-                        guild_id=station.guild_id,
-                        user_id=str(member.id),
-                        username=str(member),
-                        server_nickname=member.display_name,
-                        track_id=state.current_track_id,
-                    )
-                await _resume_or_start(player, provider, state)
-                cur = player.current_track
-                if cur is not None:
-                    await now_playing.post_or_replace(cur)
-            else:
-                station.is_paused = True
-                log.info("guild %s voice channel empty on startup — staying silent", cfg.guild_id)
+            per_guild_announcers[cfg.guild_id] = station.milestones
 
         if not stations:
             if voice_connect_failures:
@@ -660,7 +776,6 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
 
     # Graceful shutdown: close scheduler + provider + DB.
     def _install_signal_handlers() -> None:
-        loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError):
                 loop.add_signal_handler(sig, lambda: asyncio.create_task(_shutdown()))

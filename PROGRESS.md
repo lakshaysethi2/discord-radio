@@ -1,23 +1,23 @@
 # PROGRESS.md — snapshot for a fresh session
 
-Last updated: **iteration 22** — added multi-server (per-guild) management:
+Last updated: **iteration 23** — multi-server dashboard saves now apply **live** (no bot restart):
 the bot now serves many Discord servers from one process (shared radio, per-server
 voice/text/embeds/milestones), admins manage it from the dashboard **Servers**
 page, and the legacy single-guild env vars became an optional one-time bootstrap.
 
 ## Test scoreboard
-- **360 tests passing** (0 failing, 0 skipped)
+- **371 tests passing** (0 failing, 0 skipped)
 - `ruff check .` clean · `ruff format --check .` clean
 - `make test`, `make lint`, `make help` all work
 
 ## Test breakdown
 | Path                            | Tests | Focus                                                              |
 |---------------------------------|-------|--------------------------------------------------------------------|
-| tests/bot                       | 110   | player (state machine, seq race, not-ready guards), tracker, milestones (checker + announcer + now playing), scheduler + drain, config, presence, main helpers (startup retry) |
-| tests/dashboard                 | 63    | OAuth flow, session signing, queries, control queue, all routes    |
-| tests/db                        | 16    | schema, migrations, bot_state kv, WAL                              |
-| tests/file_provider             | 51    | ProviderDB, LRU cache, LocalProvider, service + concurrency        |
-| tests/provider                  | 19    | HTTP client contract, retry, error paths                           |
+| tests/bot                       | 140   | player (state machine, seq race, not-ready guards), tracker, milestones (checker + announcer + now playing), scheduler + drain, config, presence, main helpers (startup retry), live server-apply reconcile |
+| tests/dashboard                 | 80    | OAuth flow, session signing, queries, control queue, all routes    |
+| tests/db                        | 29    | schema, migrations, bot_state kv, WAL, guild config + channels     |
+| tests/file_provider             | 90    | ProviderDB, LRU cache, LocalProvider, service + concurrency        |
+| tests/provider                  | 20    | HTTP client contract, retry, error paths                           |
 | tests/test_integration.py       | 9     | bot HTTP client ↔ real file-provider ASGI app                      |
 | tests/test_control_plane.py     | 3     | dashboard POST /controls → SQLite queue → bot scheduler → fake player |
 
@@ -161,4 +161,34 @@ skipping the paused interval.
   asserts the first joiner starts at 0, not 600s in.
 
 Verification: `.venv/bin/python -m pytest -q` → **357 passed**;
+`ruff check .` clean; `ruff format --check .` clean.
+
+## Live server-apply (no bot restart) — 2026-07-17
+The dashboard **Servers** save previously only wrote `guild_configs`; the bot
+read it once on `on_ready`, so a change needed a full restart. That's gone:
+- `dashboard/commands.py`: added `apply_server` to the control-plane
+  whitelist (`payload = {"guild_id": ...}`).
+- `dashboard/main.py` `/servers/update`: after persisting the config it now
+  enqueues an `apply_server` command, so the bot applies the change within the
+  ~2s command-poll interval. The save flash reads "Server settings saved and
+  applied".
+- `bot/main.py`: added `apply_server_config()` — an idempotent reconcile that
+  diffs a guild's live `Station` against its current `guild_configs` row and:
+  * disabled / incomplete config → tears the live station down (disconnect);
+  * voice channel changed → rebuilds the station from scratch (reconnect);
+  * only the *Now Playing* text channel changed → repoints the announcers in
+    place (no voice reconnect);
+  * already matching → no-op.
+  The station build/teardown I/O was extracted from `on_ready` into reusable
+  `_build_station` / `_teardown_station` closures so startup and live-apply
+  share one code path. The `apply_server` command handler also calls
+  `sync_radio_state()` afterwards so the shared clock stays correct (e.g. a
+  disable on the only live server freezes the clock).
+- `docs/multi-server.md` + `servers.html` updated: changes apply immediately,
+  no restart.
+- New tests: `tests/bot/test_apply_server.py` (reconcile matrix with fakes) and
+  `tests/dashboard/test_servers.py::test_save_enqueues_apply_server_command` /
+  `::test_disable_enqueues_apply_server_command`.
+
+Verification: `.venv/bin/python -m pytest -q` → **371 passed**;
 `ruff check .` clean; `ruff format --check .` clean.

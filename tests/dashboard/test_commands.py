@@ -20,6 +20,15 @@ class TestEnqueue:
         with pytest.raises(commands.UnknownCommandError):
             commands.enqueue(db, command="drop_database", requested_by="42")
 
+    def test_apply_server_is_valid(self, db: Database) -> None:
+        cid = commands.enqueue(
+            db, command="apply_server", requested_by="42", payload={"guild_id": "1"}
+        )
+        assert cid > 0
+        pend = commands.pending(db)
+        assert pend[0].command == "apply_server"
+        assert pend[0].payload == {"guild_id": "1"}
+
     def test_payload_roundtrip(self, db: Database) -> None:
         commands.enqueue(db, command="skip", requested_by="42", payload={"reason": "test"})
         pend = commands.pending(db)

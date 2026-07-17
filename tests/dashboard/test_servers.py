@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dashboard import commands
 from db import guilds as guilds_db
 
 
@@ -174,3 +175,46 @@ class TestServersUpdate:
         assert cfg.enabled is True
         assert cfg.voice_channel_id == "v1"
         assert cfg.text_channel_id == "vt1"
+
+    def test_save_enqueues_apply_server_command(self, client, admin_cookie, db) -> None:
+        self._seed(db)
+        r = client.post(
+            "/servers/update",
+            data={
+                "guild_id": "1",
+                "enabled": "on",
+                "voice_channel_id": "v1",
+                "text_channel_id": "t1",
+                "csrf": "csrf-test",
+            },
+            cookies=admin_cookie,
+        )
+        assert r.status_code == 303
+        # Saving must push a live-apply command so the change takes effect
+        # without a bot restart.
+        pending = commands.pending(db)
+        assert any(
+            c.command == "apply_server" and (c.payload or {}).get("guild_id") == "1"
+            for c in pending
+        )
+
+    def test_disable_enqueues_apply_server_command(self, client, admin_cookie, db) -> None:
+        self._seed(db)
+        r = client.post(
+            "/servers/update",
+            data={
+                "guild_id": "1",
+                "enabled": "off",
+                "voice_channel_id": "evil",
+                "text_channel_id": "evil2",
+                "csrf": "csrf-test",
+            },
+            cookies=admin_cookie,
+        )
+        assert r.status_code == 303
+        # Disabling should still push a command so the live station disconnects.
+        pending = commands.pending(db)
+        assert any(
+            c.command == "apply_server" and (c.payload or {}).get("guild_id") == "1"
+            for c in pending
+        )

@@ -415,7 +415,17 @@ def create_app(
             voice_channel_id=vcid,
             text_channel_id=tcid,
         )
-        return RedirectResponse("/servers?flash=Server+settings+saved", status_code=303)
+
+        # Push the change to the bot right away so the admin doesn't have to
+        # restart it. The bot polls this queue and live-applies the config
+        # (joins/leaves the voice channel, repoints Now Playing, etc.).
+        commands.enqueue(
+            db,
+            command="apply_server",
+            requested_by=user.user_id,
+            payload={"guild_id": guild_id},
+        )
+        return RedirectResponse("/servers?flash=Server+settings+saved+and+applied", status_code=303)
 
     @app.get("/queue", response_class=HTMLResponse)
     async def queue_page(

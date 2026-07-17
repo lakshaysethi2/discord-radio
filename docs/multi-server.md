@@ -18,7 +18,7 @@ This guide covers how admins decide **which servers** the bot speaks in and
 | `guild_channels` (DB) | Cached list of each server's channels, refreshed from Discord on every `on_ready` so the dashboard can render dropdowns without calling Discord. |
 | `on_ready` (bot) | Discovers guilds + channels, seeds the env vars once, then joins every *enabled* server that has both channels selected. |
 | `Station` (bot) | Per-server object bundling a `Player`, `NowPlaying` embed, and `MilestoneAnnouncer`. Sessions are tracked per `guild_id`. |
-| `/servers` (dashboard) | Lists every discovered server with an enable toggle + voice/text `<select>`s; saves to `guild_configs`. |
+| `/servers` (dashboard) | Lists every discovered server with an enable toggle + voice/text `<select>`s; saves to `guild_configs` and live-applies via the `apply_server` control-plane command. |
 
 Because the radio is shared, controls (`skip` / `pause` / `resume` / `volume` /
 `play`) act on the stream and are fanned out to every server that currently has
@@ -59,7 +59,10 @@ everything from the dashboard.
      (Discord nests a text chat under the voice channel when "text chat in
      voice" is enabled).
    - Click **Save**.
-3. Restart the bot so it re-reads `guild_configs` and (re)connects.
+3. The bot picks the change up within a few seconds — it joins/leaves the
+   voice channel and repoints *Now Playing* on the fly. **No restart needed.**
+   (If the bot is offline when you save, the change is applied automatically the
+   next time it starts.)
 
 The dashboard only ever stores channel ids it actually discovered for that
 server, so a forged form can't point the bot at an arbitrary channel.
@@ -81,8 +84,12 @@ server, so a forged form can't point the bot at an arbitrary channel.
 ## Troubleshooting
 
 * **Server not listed** — the bot hasn't discovered it yet. Make sure the bot
-  is actually in the server and online, then restart.
-* **Saved but bot still silent** — server management changes apply on bot
-  restart (`on_ready`), not live.
+  is actually in the server and online; channels are refreshed on `on_ready`.
+* **Saved but bot still silent** — server changes apply live (the bot polls
+  the `apply_server` command within a couple of seconds), so first confirm the
+  bot process is running. Then check the log for `voice connect attempt` /
+  `giving up on voice connection` — that means the bot role lacks **Connect +
+  Speak** in the chosen voice channel, or this host can't reach Discord's voice
+  servers over UDP.
 * **"no enabled servers with valid channels" in the bot log** — enable a server
-  and pick valid voice + text channels in the dashboard, then restart.
+  and pick valid voice + text channels in the dashboard.
