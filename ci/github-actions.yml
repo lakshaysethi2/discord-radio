@@ -1,3 +1,16 @@
+# -----------------------------------------------------------------------------
+# GitHub Actions CI workflow — REFERENCE FILE
+#
+# This lives in ci/ (not .github/workflows/) so the Arena/GitHub App can push
+# without the `workflows` permission scope. To activate CI on GitHub:
+#
+#     mkdir -p .github/workflows
+#     mv ci/github-actions.yml .github/workflows/ci.yml
+#     git add -A && git commit -m "Activate CI" && git push
+#
+# You'll need to push this yourself (or grant the App the `workflows` scope).
+# -----------------------------------------------------------------------------
+
 name: CI
 
 on:

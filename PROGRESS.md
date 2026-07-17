@@ -35,7 +35,7 @@ Last updated: **iteration 20** — all 12 blueprint phases complete + four hosti
 - **8** `bot/scheduler.py` — `run_monthly_reset()` with multi-month snapshotting
 - **9** `dashboard/`: FastAPI + Discord OAuth2 + Jinja2 + shared-SQLite control queue
 - **10** Dockerfile (bot+dashboard), Dockerfile (file-provider), `docker-compose.yml`, `.dockerignore`
-- **11** `.github/workflows/ci.yml` (lint + tests on py3.11/3.12 + docker build)
+- **11** `ci/github-actions.yml` (lint + tests on py3.11/3.12 + docker build; move to `.github/workflows/` to activate)
 - **12** `README.md`, `docs/telegram-setup.md`, `docs/dashboard-setup.md`
 
 ## Bugs found & fixed across four review passes

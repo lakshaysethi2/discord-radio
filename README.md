@@ -48,7 +48,7 @@ Three independently-restartable services:
 
 ---
 
-## Quick start (Docker)
+## Quick start (Docker via Make)
 
 ```bash
 git clone https://github.com/YOUR-ORG/discord-radio
@@ -56,11 +56,32 @@ cd discord-radio
 cp .env.example .env
 # fill in DISCORD_BOT_TOKEN, DISCORD_GUILD_ID, DISCORD_VOICE_CHANNEL_ID,
 # DISCORD_TEXT_CHANNEL_ID, and pick a provider backend.
-docker compose up -d
+make up          # bring everything up (file-provider, bot, dashboard)
+make logs        # tail all services
+make health      # container status
 ```
 
 The dashboard is served on `http://localhost:8000`. Put Cloudflare / nginx /
 Caddy in front for HTTPS.
+
+Everyday ops all go through the Makefile:
+
+| Command                     | What it does                                        |
+| --------------------------- | --------------------------------------------------- |
+| `make up`                   | `docker compose up -d`                              |
+| `make up-build`             | Rebuild images then start                           |
+| `make down`                 | Stop everything (keeps volumes)                     |
+| `make restart`              | Restart all containers                              |
+| `make rebuild`              | Full no-cache rebuild                               |
+| `make logs` / `logs-bot`    | Tail logs (all / just bot)                          |
+| `make ps`                   | Container status                                    |
+| `make shell-bot`            | Shell into the bot container                        |
+| `make db-shell`             | `sqlite3 /data/tv.db` inside the bot container      |
+| `make refresh-playlist`     | Tell the file-provider to rescan                    |
+| `make telegram-login`       | First-run interactive Telethon auth                 |
+| `make backup`               | tar.gz of `data/` and `cache/` in `backups/`        |
+
+Run `make help` to see everything.
 
 For the Telegram (MTProto) backend, see [`docs/telegram-setup.md`](docs/telegram-setup.md).
 For the OAuth2 admin dashboard, see [`docs/dashboard-setup.md`](docs/dashboard-setup.md).
@@ -136,6 +157,21 @@ docs/           Backend setup guides
   that don't import discord.py.
 
 ---
+
+## CI
+
+A ready-to-use GitHub Actions workflow lives at [`ci/github-actions.yml`](ci/github-actions.yml).
+It runs ruff + pytest on Python 3.11 and 3.12 and does a Docker build sanity
+check. To activate:
+
+```bash
+mkdir -p .github/workflows
+mv ci/github-actions.yml .github/workflows/ci.yml
+git commit -am "Activate CI" && git push
+```
+
+(It lives outside `.github/` so a restricted GitHub App can push the rest of
+the repo without needing the `workflows` scope.)
 
 ## License
 
