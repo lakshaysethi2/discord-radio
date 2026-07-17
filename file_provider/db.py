@@ -284,14 +284,47 @@ class ProviderDB:
             )
         return rows
 
+    @staticmethod
+    def _track_filters(
+        *,
+        search: str | None = None,
+        provider: str | None = None,
+        has_video: bool | None = None,
+        ready: bool | None = None,
+        table: str = "ordered",
+    ) -> tuple[str, list[object]]:
+        """Build shared filter SQL for the queue page and its total count."""
+        clauses: list[str] = []
+        params: list[object] = []
+        if search:
+            clauses.append(f"{table}.title LIKE ?")
+            params.append(f"%{search}%")
+        if provider:
+            clauses.append(f"{table}.provider = ?")
+            params.append(provider)
+        if has_video is not None:
+            clauses.append(f"{table}.has_video = ?")
+            params.append(1 if has_video else 0)
+        if ready is not None:
+            expression = "cache_entries.file_path IS NOT NULL"
+            clauses.append(expression if ready else f"NOT ({expression})")
+        return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
     def list_all(
-        self, *, offset: int = 0, limit: int = 100, search: str | None = None
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        search: str | None = None,
+        provider: str | None = None,
+        has_video: bool | None = None,
+        ready: bool | None = None,
     ) -> list[sqlite3.Row]:
         """Return a non-wrapping track page with natural playlist positions.
 
-        The ranking CTE runs before an optional title filter, so a searched
-        result still reports its position in the full sequential playlist.
-        Cache paths are joined in one read; listing does not touch LRU state.
+        The ranking CTE runs before filters, so a searched/filtered result still
+        reports its position in the full sequential playlist. Cache paths are
+        joined in one read; listing does not touch LRU state.
         """
         offset = max(0, int(offset))
         limit = max(1, min(int(limit), 1000))
@@ -300,25 +333,30 @@ class ProviderDB:
             "SELECT tracks.*, ROW_NUMBER() OVER (ORDER BY sort_order, track_id) - 1 "
             "AS playlist_position FROM tracks) "
             "SELECT ordered.*, cache_entries.file_path AS cache_file_path "
-            "FROM ordered LEFT JOIN cache_entries ON cache_entries.track_id = ordered.track_id "
+            "FROM ordered LEFT JOIN cache_entries ON cache_entries.track_id = ordered.track_id"
         )
-        params: tuple[object, ...]
-        if search:
-            sql += "WHERE ordered.title LIKE ? "
-            params = (f"%{search}%", limit, offset)
-        else:
-            params = (limit, offset)
-        sql += "ORDER BY ordered.playlist_position LIMIT ? OFFSET ?"
-        return self.fetchall(sql, params)
+        where, params = self._track_filters(
+            search=search, provider=provider, has_video=has_video, ready=ready
+        )
+        sql += where + " ORDER BY ordered.playlist_position LIMIT ? OFFSET ?"
+        params.extend((limit, offset))
+        return self.fetchall(sql, tuple(params))
 
-    def count_tracks(self, *, search: str | None = None) -> int:
-        """Return the number of tracks matching an optional title filter."""
-        if search:
-            row = self.fetchone(
-                "SELECT COUNT(*) AS n FROM tracks WHERE title LIKE ?", (f"%{search}%",)
-            )
-        else:
-            row = self.fetchone("SELECT COUNT(*) AS n FROM tracks")
+    def count_tracks(
+        self,
+        *,
+        search: str | None = None,
+        provider: str | None = None,
+        has_video: bool | None = None,
+        ready: bool | None = None,
+    ) -> int:
+        """Return the number of tracks matching the queue filters."""
+        sql = "SELECT COUNT(*) AS n FROM tracks AS ordered "
+        sql += "LEFT JOIN cache_entries ON cache_entries.track_id = ordered.track_id"
+        where, params = self._track_filters(
+            search=search, provider=provider, has_video=has_video, ready=ready
+        )
+        row = self.fetchone(sql + where, tuple(params))
         return int(row["n"]) if row else 0
 
     def position_of(self, track_id: str) -> int | None:

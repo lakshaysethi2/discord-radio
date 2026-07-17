@@ -129,9 +129,25 @@ def create_app(service: Service | None = None) -> FastAPI:
         offset: int = Query(0, ge=0),
         limit: int = Query(100, ge=1, le=500),
         q: str | None = Query(None, description="case-insensitive title substring"),
+        provider: str | None = Query(None, description="provider name"),
+        media_type: str | None = Query(None, alias="type", description="audio or video"),
+        cached: str | None = Query(None, description="ready or missing"),
     ) -> JSONResponse:
-        """List tracks without causing downloads."""
-        items, total = svc().list_all(offset=offset, limit=limit, search=q)
+        """List tracks without causing downloads, with dashboard filters."""
+        if media_type not in (None, "", "all", "audio", "video"):
+            raise HTTPException(status_code=422, detail="type must be audio or video")
+        if cached not in (None, "", "all", "ready", "missing"):
+            raise HTTPException(status_code=422, detail="cached must be ready or missing")
+        has_video = True if media_type == "video" else False if media_type == "audio" else None
+        ready = True if cached == "ready" else False if cached == "missing" else None
+        items, total = svc().list_all(
+            offset=offset,
+            limit=limit,
+            search=q,
+            provider=provider or None,
+            has_video=has_video,
+            ready=ready,
+        )
         return JSONResponse(
             {
                 "items": [item.to_dict() for item in items],

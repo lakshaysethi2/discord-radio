@@ -439,20 +439,34 @@ def create_app(
         request: Request,
         user: auth.SessionUser = Depends(_require_admin),
         page: int = Query(1, ge=1, le=10_000),
-        page_size: int = Query(50, ge=10, le=500),
+        page_size: int = Query(200, ge=10, le=500),
         q: str | None = Query(None),
+        provider_filter: str = Query("all", alias="provider"),
+        media_type: str = Query("all", alias="type"),
+        cached: str = Query("all"),
     ) -> HTMLResponse:
-        """Paginated playlist with search and a direct play-now control."""
+        """Paginated playlist with search, filters, and direct play-now control."""
         tracks: list = []
         total = 0
         error: str | None = None
         current_track_id: str | None = None
         current_page: int | None = None
         search = (q or "").strip() or None
+        provider_filter = provider_filter.strip() or "all"
+        media_type = media_type.strip().lower() or "all"
+        cached = cached.strip().lower() or "all"
+        provider_query = None if provider_filter == "all" else provider_filter
+        type_query = None if media_type == "all" else media_type
+        ready_query = None if cached == "all" else cached == "ready"
         try:
             fp = await _get_provider()
             tracks, total = await fp.list_tracks(
-                offset=(page - 1) * page_size, limit=page_size, search=search
+                offset=(page - 1) * page_size,
+                limit=page_size,
+                search=search,
+                provider=provider_query,
+                media_type=type_query,
+                ready=ready_query,
             )
         except Exception as exc:
             error = f"could not reach file provider: {exc}"
@@ -478,6 +492,9 @@ def create_app(
                 "page_size": page_size,
                 "total_pages": max(1, (total + page_size - 1) // page_size),
                 "q": q or "",
+                "provider_filter": provider_filter,
+                "media_type": media_type,
+                "cached": cached,
                 "current_track_id": current_track_id,
                 "current_page": current_page,
                 "error": error,
@@ -493,6 +510,10 @@ def create_app(
         csrf: str = Form(""),
         page: int = Form(1),
         q: str = Form(""),
+        page_size: int = Form(200),
+        provider: str = Form("all"),
+        media_type: str = Form("all"),
+        cached: str = Form("all"),
         user: auth.SessionUser = Depends(_require_admin),
     ) -> Response:
         sess = _get_session(request) or {}
@@ -506,7 +527,15 @@ def create_app(
         )
         from urllib.parse import urlencode
 
-        params = {"page": page, "q": q, "flash": "Playing selected track"}
+        params = {
+            "page": page,
+            "page_size": page_size,
+            "q": q,
+            "provider": provider,
+            "type": media_type,
+            "cached": cached,
+            "flash": "Playing selected track",
+        }
         return RedirectResponse(
             "/queue?" + urlencode({k: v for k, v in params.items() if v}), status_code=303
         )

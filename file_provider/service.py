@@ -209,12 +209,28 @@ class Service:
             return self._ensure_and_wrap(row)
 
     def list_all(
-        self, *, offset: int = 0, limit: int = 100, search: str | None = None
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        search: str | None = None,
+        provider: str | None = None,
+        has_video: bool | None = None,
+        ready: bool | None = None,
     ) -> tuple[list[TrackPayload], int]:
         """Return a metadata-only track page and total; never downloads files."""
         with self._lock:
-            rows = self.db.list_all(offset=offset, limit=limit, search=search)
-            total = self.db.count_tracks(search=search)
+            rows = self.db.list_all(
+                offset=offset,
+                limit=limit,
+                search=search,
+                provider=provider,
+                has_video=has_video,
+                ready=ready,
+            )
+            total = self.db.count_tracks(
+                search=search, provider=provider, has_video=has_video, ready=ready
+            )
             payloads = [self._metadata_payload(row) for row in rows]
             return payloads, total
 

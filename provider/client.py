@@ -263,12 +263,25 @@ class FileProviderClient:
         return await self._get_track(f"/tracks/{track_id}")
 
     async def list_tracks(
-        self, *, offset: int = 0, limit: int = 100, search: str | None = None
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        search: str | None = None,
+        provider: str | None = None,
+        media_type: str | None = None,
+        ready: bool | None = None,
     ) -> tuple[list[TrackResponse], int]:
         """List a page of tracks without forcing downloads."""
         params: dict[str, Any] = {"offset": offset, "limit": limit}
         if search:
             params["q"] = search
+        if provider:
+            params["provider"] = provider
+        if media_type:
+            params["type"] = media_type
+        if ready is not None:
+            params["cached"] = "ready" if ready else "missing"
         resp = await self._request("GET", "/tracks", params=params)
         if resp.status_code != 200:
             raise ProviderError(f"GET /tracks -> HTTP {resp.status_code}: {resp.text[:200]}")

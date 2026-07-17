@@ -206,3 +206,37 @@ def test_list_all_search_retains_natural_playlist_position(db: ProviderDB) -> No
     _insert(db, ["a", "b", "c"])
     row = db.list_all(search="Tc")[0]
     assert row["playlist_position"] == 2
+
+
+def test_list_all_supports_queue_filters(db: ProviderDB, tmp_path) -> None:
+    db.upsert_tracks(
+        [
+            {
+                "track_id": "local_a",
+                "title": "Audio A",
+                "duration_seconds": 1,
+                "size_bytes": 1,
+                "provider": "local",
+                "source_ref": "a",
+                "sort_order": 0,
+                "has_video": False,
+            },
+            {
+                "track_id": "torrent_v",
+                "title": "Video V",
+                "duration_seconds": 1,
+                "size_bytes": 1,
+                "provider": "torrent",
+                "source_ref": "v",
+                "sort_order": 1,
+                "has_video": True,
+            },
+        ]
+    )
+    cached = tmp_path / "cached.audio"
+    cached.write_bytes(b"x")
+    db.record_cache("torrent_v", str(cached), 1)
+
+    rows = db.list_all(provider="torrent", has_video=True, ready=True)
+    assert [row["track_id"] for row in rows] == ["torrent_v"]
+    assert db.count_tracks(provider="local", has_video=False, ready=False) == 1
