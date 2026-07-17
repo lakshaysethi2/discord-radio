@@ -64,10 +64,14 @@ class ElapsedClock:
 
 # Injected factories so tests can substitute a fake audio source without
 # needing FFmpeg on the machine running the tests.
-FFmpegSourceFactory = Callable[[str, float], object]  # (path, seek_seconds) -> AudioSource
+FFmpegSourceFactory = Callable[
+    [str, float, int], object
+]  # (path, seek_seconds, volume_percent) -> AudioSource
 
 
-def default_ffmpeg_source(path: str, seek_seconds: float):  # pragma: no cover — requires ffmpeg
+def default_ffmpeg_source(
+    path: str, seek_seconds: float, volume_percent: int
+):  # pragma: no cover — requires ffmpeg
     """Build a discord.FFmpegPCMAudio for `path`, seeking to `seek_seconds`."""
     import discord  # local import — discord.py is heavy and optional in tests
 
@@ -77,11 +81,10 @@ def default_ffmpeg_source(path: str, seek_seconds: float):  # pragma: no cover �
         before = f"-ss {seek_seconds:.3f}"
     # -vn drops any video stream just in case the source has one.
     # -loglevel warning keeps the ffmpeg subprocess quiet.
-    return discord.FFmpegPCMAudio(
-        path,
-        before_options=before,
-        options="-vn -loglevel warning",
-    )
+    options = "-vn -loglevel warning"
+    if volume_percent != 100:
+        options = f"-vn -af volume={volume_percent / 100:.2f} -loglevel warning"
+    return discord.FFmpegPCMAudio(path, before_options=before, options=options)
 
 
 class Player:
@@ -95,7 +98,7 @@ class Player:
         state: BotState — the player persists position + track id on transitions.
         loop: The asyncio loop the discord.py client runs on. Used to schedule
             the on-finish callback from the FFmpeg thread.
-        source_factory: Builds an audio source from (path, seek_seconds).
+        source_factory: Builds an audio source from (path, seek_seconds, volume_percent).
     """
 
     def __init__(
@@ -152,7 +155,9 @@ class Player:
         self._play_seq += 1
         my_seq = self._play_seq
 
-        source = self.source_factory(track.local_path, seek_seconds)
+        source = self.source_factory(
+            track.local_path, seek_seconds, self.state.stream_volume_percent
+        )
         self.current_track = track
         self.clock.start(resume_from=seek_seconds)
 
@@ -232,6 +237,16 @@ class Player:
                 log.warning("resume: track %s not ready", track_id)
                 return
             await self._start_locked(track, seek_seconds=resume_at)
+
+    async def set_volume(self, volume_percent: int) -> int:
+        """Persist global gain and restart the active source at its exact position."""
+        volume = min(250, max(50, int(volume_percent)))
+        async with self._lock:
+            self.state.stream_volume_percent = volume
+            if self.current_track is not None and self.is_playing():
+                position = self.clock.stop()
+                await self._start_locked(self.current_track, seek_seconds=position)
+        return volume
 
     async def skip(self) -> None:
         """Force-finish the current track and advance."""

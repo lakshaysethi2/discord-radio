@@ -12,7 +12,7 @@
         test test-cov lint format \
         dev shell-bot shell-dashboard shell-provider \
         db-shell db-shell-provider \
-        refresh-playlist telegram-login \
+        refresh-playlist telegram-login volume \
         backup clean env
 
 # ---------------------------------------------------------------- config
@@ -142,6 +142,13 @@ pause:  ## Pause playback
 resume:  ## Resume/play playback
 	$(COMPOSE) exec bot \
 	  python -c "from db.database import Database; from dashboard.commands import enqueue; enqueue(Database('/data/tv.db'), command='resume', requested_by='CLI'); print('Queued resume command')"
+
+volume:  ## Set global stream gain: make volume VOLUME=125 (50-250)
+	@test -n "$(VOLUME)" || (echo "Usage: make volume VOLUME=125 (50-250)"; exit 2)
+	@case "$(VOLUME)" in *[!0-9]*|"") echo "VOLUME must be an integer"; exit 2;; esac
+	@[ "$(VOLUME)" -ge 50 ] && [ "$(VOLUME)" -le 250 ] || (echo "VOLUME must be 50-250"; exit 2)
+	$(COMPOSE) exec bot \
+	  python -c "from db.database import Database; from dashboard.commands import enqueue; enqueue(Database('/data/tv.db'), command='set_volume', requested_by='CLI', payload={'volume_percent': '$(VOLUME)'}); print('Queued volume command')"
 
 telegram-login: env build  ## Interactive Telethon first-run auth
 	$(COMPOSE) run --rm file-provider python -c "\

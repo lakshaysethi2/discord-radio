@@ -90,3 +90,19 @@ def test_empty_playlist_returns_404(tmp_path):
     client = TestClient(app)
     r = client.get("/current")
     assert r.status_code == 404
+
+
+def test_tracks_page_and_search(client) -> None:
+    response = client.get("/tracks?offset=0&limit=2&q=s2")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert [item["title"] for item in body["items"]] == ["Track s2"]
+
+
+def test_jump_sets_cursor(client, service) -> None:
+    target = client.get("/peek?count=3").json()[2]["track_id"]
+    response = client.post(f"/jump/{target}")
+    assert response.status_code == 200
+    assert response.json()["track_id"] == target
+    assert service.db.get_cursor() == 2

@@ -40,7 +40,9 @@ def create_app(service: Service | None = None) -> FastAPI:
             result = s.refresh_playlist()
             log.info("startup scan complete: %s", result)
         else:
-            log.info("playlist already has %d tracks — skipping startup scan", s.db.playlist_length())
+            log.info(
+                "playlist already has %d tracks — skipping startup scan", s.db.playlist_length()
+            )
         yield
 
     app = FastAPI(title="Discord TV File Provider", version="0.1.0", lifespan=lifespan)
@@ -82,6 +84,23 @@ def create_app(service: Service | None = None) -> FastAPI:
     def get_peek(count: int = Query(5, ge=1, le=100)) -> JSONResponse:
         return JSONResponse([p.to_dict() for p in svc().peek(count)])
 
+    @app.get("/tracks")
+    def list_tracks(
+        offset: int = Query(0, ge=0),
+        limit: int = Query(100, ge=1, le=500),
+        q: str | None = Query(None, description="case-insensitive title substring"),
+    ) -> JSONResponse:
+        """List tracks without causing downloads."""
+        items, total = svc().list_all(offset=offset, limit=limit, search=q)
+        return JSONResponse(
+            {
+                "items": [item.to_dict() for item in items],
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+            }
+        )
+
     @app.get("/tracks/{track_id}")
     def get_track(track_id: str) -> JSONResponse:
         try:
@@ -96,6 +115,15 @@ def create_app(service: Service | None = None) -> FastAPI:
         svc().mark_played(track_id)
         return {"ok": True}
 
+    @app.post("/jump/{track_id}")
+    def post_jump(track_id: str) -> JSONResponse:
+        try:
+            return JSONResponse(svc().jump_to(track_id).to_dict())
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"unknown track {track_id}") from exc
+        except ProviderFetchError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     @app.post("/refresh")
     def post_refresh() -> dict:
         return svc().refresh_playlist()
@@ -105,4 +133,3 @@ def create_app(service: Service | None = None) -> FastAPI:
 
 # WSGI/ASGI entry point: `uvicorn file_provider.api.main:app`
 app = create_app()
-

@@ -93,3 +93,14 @@ class TestSnapshot:
             now_playing_message_id=42,
             playlist_position=3,
         )
+
+
+class TestStreamVolume:
+    def test_default_and_clamped_roundtrip(self, state: BotState) -> None:
+        assert state.stream_volume_percent == 100
+        state.stream_volume_percent = 125
+        assert state.stream_volume_percent == 125
+        state.stream_volume_percent = 999
+        assert state.stream_volume_percent == 250
+        state.stream_volume_percent = 1
+        assert state.stream_volume_percent == 50

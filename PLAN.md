@@ -122,3 +122,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [ ] Verify Docker build actually succeeds locally (needs Docker in the sandbox — deferred to CI)
 - [ ] `MilestoneAnnouncer.check_and_announce` — add rate-limiting so we don't spam if a user's totals rapidly cross multiple thresholds (rare; V2)
 - [ ] Consider a `/health` endpoint on the dashboard (currently the compose healthcheck pings `/login`; works fine)
+
+## Playlist-management delivery
+- [x] Full `/queue` browse view: paginated all-track listing, title search, active-track jump, cache/type status, and CSRF-protected **Play now** command queue integration.
+- [ ] Enable/disable tracks and best-effort reorder controls (manual order is reset by a provider rescan; disabled state persists).
+- [ ] Dashboard-managed backend sources (archive.org item IDs and Telegram channel IDs), seeded from environment on first boot.

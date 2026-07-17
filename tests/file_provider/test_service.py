@@ -159,3 +159,18 @@ class TestConcurrency:
         t = s._prefetch_thread
         if t is not None:
             t.join(timeout=5.0)
+
+
+class TestPlaylistBrowsing:
+    def test_list_all_is_paged_and_does_not_fetch(self, service: Service, fake_provider) -> None:
+        before = list(fake_provider.fetches)
+        items, total = service.list_all(offset=1, limit=1)
+        assert total == 3
+        assert [item.title for item in items] == ["Track s2"]
+        assert fake_provider.fetches == before
+
+    def test_jump_to_sets_cursor_and_fetches_selected(self, service: Service) -> None:
+        items, _ = service.list_all()
+        selected = service.jump_to(items[2].track_id)
+        assert selected.track_id == items[2].track_id
+        assert service.current_track_id() == selected.track_id

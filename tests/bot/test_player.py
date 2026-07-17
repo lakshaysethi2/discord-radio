@@ -66,6 +66,7 @@ def make_track(**overrides: Any) -> TrackResponse:
 class RecordingSource:
     path: str
     seek: float
+    volume_percent: int
     label: str = "src"
 
 
@@ -85,8 +86,8 @@ async def _build_ctx(state: BotState) -> Ctx:
     provider = FakeProvider(tracks)
     sources: list[RecordingSource] = []
 
-    def factory(path: str, seek: float) -> RecordingSource:
-        s = RecordingSource(path=path, seek=seek)
+    def factory(path: str, seek: float, volume_percent: int) -> RecordingSource:
+        s = RecordingSource(path=path, seek=seek, volume_percent=volume_percent)
         sources.append(s)
         return s
 
@@ -290,3 +291,19 @@ class TestElapsedReporting:
         await ctx.player.start(make_track(), seek_seconds=5)
         await asyncio.sleep(0.05)
         assert ctx.player.elapsed_seconds() >= 5
+
+
+class TestPlayerVolume:
+    async def test_volume_restarts_current_track_at_position(self, ctx: Ctx) -> None:
+        await ctx.player.start(make_track())
+        await asyncio.sleep(0.01)
+        applied = await ctx.player.set_volume(125)
+        assert applied == 125
+        assert ctx.state.stream_volume_percent == 125
+        assert ctx.voice.play_calls == 2
+        assert ctx.sources[-1].volume_percent == 125
+        assert ctx.sources[-1].seek >= 0
+
+    async def test_volume_is_clamped(self, ctx: Ctx) -> None:
+        await ctx.player.set_volume(999)
+        assert ctx.state.stream_volume_percent == 250

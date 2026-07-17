@@ -240,6 +240,55 @@ class ProviderDB:
             )
         return rows
 
+    def list_all(
+        self, *, offset: int = 0, limit: int = 100, search: str | None = None
+    ) -> list[sqlite3.Row]:
+        """Return a non-wrapping track page with natural playlist positions.
+
+        The ranking CTE runs before an optional title filter, so a searched
+        result still reports its position in the full sequential playlist.
+        Cache paths are joined in one read; listing does not touch LRU state.
+        """
+        offset = max(0, int(offset))
+        limit = max(1, min(int(limit), 1000))
+        sql = (
+            "WITH ordered AS ("
+            "SELECT tracks.*, ROW_NUMBER() OVER (ORDER BY sort_order, track_id) - 1 "
+            "AS playlist_position FROM tracks) "
+            "SELECT ordered.*, cache_entries.file_path AS cache_file_path "
+            "FROM ordered LEFT JOIN cache_entries ON cache_entries.track_id = ordered.track_id "
+        )
+        params: tuple[object, ...]
+        if search:
+            sql += "WHERE ordered.title LIKE ? "
+            params = (f"%{search}%", limit, offset)
+        else:
+            params = (limit, offset)
+        sql += "ORDER BY ordered.playlist_position LIMIT ? OFFSET ?"
+        return self.fetchall(sql, params)
+
+    def count_tracks(self, *, search: str | None = None) -> int:
+        """Return the number of tracks matching an optional title filter."""
+        if search:
+            row = self.fetchone(
+                "SELECT COUNT(*) AS n FROM tracks WHERE title LIKE ?", (f"%{search}%",)
+            )
+        else:
+            row = self.fetchone("SELECT COUNT(*) AS n FROM tracks")
+        return int(row["n"]) if row else 0
+
+    def position_of(self, track_id: str) -> int | None:
+        """Return a track's zero-based position in natural playlist order."""
+        row = self.fetchone("SELECT sort_order FROM tracks WHERE track_id=?", (track_id,))
+        if row is None:
+            return None
+        count = self.fetchone(
+            "SELECT COUNT(*) AS n FROM tracks "
+            "WHERE sort_order < ? OR (sort_order = ? AND track_id < ?)",
+            (row["sort_order"], row["sort_order"], track_id),
+        )
+        return int(count["n"]) if count else 0
+
     def upsert_tracks(self, tracks: list[dict]) -> tuple[int, int]:
         """Insert new tracks, update existing. Returns (added, updated)."""
         added = updated = 0

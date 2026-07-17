@@ -117,7 +117,9 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
 
     intents = discord.Intents.default()
     intents.voice_states = True
-    intents.members = False  # voice_states is enough to track channel presence without privileged intent
+    intents.members = (
+        False  # voice_states is enough to track channel presence without privileged intent
+    )
     intents.guilds = True
     intents.message_content = False  # we don't read messages
 
@@ -133,7 +135,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
     text_channel = None
     ready_done = False  # guard against on_ready firing more than once
 
-    async def _handle_command(command: str, _payload) -> str:
+    async def _handle_command(command: str, payload: dict | None) -> str:
         """Called by the scheduler's command loop for each pending row."""
         if player is None:
             return "error: player not ready"
@@ -148,6 +150,29 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             if player.current_track is not None:
                 await now_playing.post_or_replace(player.current_track)
             return "ok:resumed"
+        if command == "set_volume":
+            try:
+                volume = int((payload or {}).get("volume_percent"))
+            except (TypeError, ValueError):
+                return "error: set_volume requires integer payload {volume_percent}"
+            if not 50 <= volume <= 250:
+                return "error: volume must be between 50 and 250"
+            applied = await player.set_volume(volume)
+            return f"ok:volume:{applied}"
+        if command == "play_track":
+            if not payload or not isinstance(payload.get("track_id"), str):
+                return "error: play_track requires payload {track_id}"
+            track_id = payload["track_id"]
+            try:
+                track = await provider.jump_to(track_id)
+            except Exception as exc:
+                return f"error: jump failed: {exc}"
+            if not track.ready or not track.local_path:
+                return f"error: track {track_id} not ready"
+            await player.start(track)
+            with contextlib.suppress(Exception):
+                await now_playing.post_or_replace(track)
+            return f"ok:playing:{track_id}"
         if command == "refresh_playlist":
             # File-provider owns playlists — ask it to rescan.
             try:
