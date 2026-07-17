@@ -1,0 +1,46 @@
+[project]
+name = "discord-radio"
+version = "0.1.0"
+description = "24/7 autonomous Discord audio streaming bot with dashboard and file-provider service"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["data", "cache", "media"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle + pyflakes
+    "I",             # isort
+    "B",             # bugbear
+    "UP",            # pyupgrade
+    "SIM",           # simplify
+    "RUF",           # ruff-specific
+]
+ignore = [
+    "E501",  # line-too-long — ruff formatter handles wrap decisions
+    "B008",  # allow Depends(...) in FastAPI signatures
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["B011", "SIM117"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning:websockets",
+    "ignore::DeprecationWarning:audioop",
+    "ignore::DeprecationWarning:httpx",  # per-request cookies=<...> deprecation
+    "ignore::starlette.routing.StarletteDeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["bot", "dashboard", "db", "provider", "file_provider"]
+omit = ["*/__init__.py", "*/main.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

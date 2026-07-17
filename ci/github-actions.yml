@@ -1,0 +1,80 @@
+# -----------------------------------------------------------------------------
+# GitHub Actions CI workflow — REFERENCE FILE
+#
+# This lives in ci/ (not .github/workflows/) so the Arena/GitHub App can push
+# without the `workflows` permission scope. To activate CI on GitHub:
+#
+#     mkdir -p .github/workflows
+#     mv ci/github-actions.yml .github/workflows/ci.yml
+#     git add -A && git commit -m "Activate CI" && git push
+#
+# You'll need to push this yourself (or grant the App the `workflows` scope).
+# -----------------------------------------------------------------------------
+
+name: CI
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: lint + tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            file_provider/requirements.txt
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r file_provider/requirements.txt
+
+      - name: Ruff lint
+        run: |
+          python -m ruff check .
+          python -m ruff format --check .
+
+      - name: Pytest (with coverage)
+        run: |
+          python -m coverage run -m pytest -q
+          python -m coverage xml
+          python -m coverage report
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: warn
+
+  docker:
+    name: docker build + containerised test suite
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create .env from example so compose can load it
+        run: cp .env.example .env
+      - name: Build images (all services)
+        run: make build
+      - name: Run pytest inside the test container
+        run: make test
+      - name: Run ruff inside the test container
+        run: make lint

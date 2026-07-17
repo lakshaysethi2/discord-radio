@@ -3,35 +3,28 @@
 .env.*
 !.env.example
 
-# --- Data & cache (mounted volumes) ---
+# --- Data / cache / media (bind-mounted, not baked into image) ---
 data/
 cache/
 media/
 
-# --- Telethon session files ---
-*.session
-*.session-journal
-telethon.session*
+# --- Git ---
+.git/
+.gitignore
+.gitlab-ci.yml
+.github/
 
 # --- Python ---
 __pycache__/
 *.py[cod]
-*$py.class
-*.egg-info/
-.eggs/
 .pytest_cache/
 .ruff_cache/
-.mypy_cache/
 .coverage
 .coverage.*
 htmlcov/
 coverage.xml
-
-# --- Virtualenvs ---
 .venv/
 venv/
-env/
-ENV/
 
 # --- IDE / OS ---
 .idea/
@@ -39,7 +32,17 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# --- Build artifacts ---
+# --- Docs / meta (not needed in image) ---
+tests/
+docs/
+README.md
+PLAN.md
+PROGRESS.md
+BLOCKED.md
+Makefile
+LICENSE
+
+# --- Build ---
 build/
 dist/
-*.log
+*.egg-info/

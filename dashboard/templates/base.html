@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}TV Bot{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+  <header class="border-b border-slate-800 bg-slate-900/60">
+    <nav class="max-w-4xl mx-auto px-4 py-3 flex items-center gap-4 text-sm">
+      <a href="/dashboard" class="font-semibold text-slate-100 hover:text-white">🎙️ TV Bot</a>
+      <a href="/dashboard" class="text-slate-300 hover:text-white">Dashboard</a>
+      <a href="/leaderboard" class="text-slate-300 hover:text-white">Leaderboard</a>
+      <a href="/queue" class="text-slate-300 hover:text-white">Queue</a>
+      <div class="grow"></div>
+      {% if user %}
+        <span class="text-slate-400 text-xs">Signed in as <b>{{ user.username }}</b></span>
+        <a href="/logout" class="text-slate-400 hover:text-white text-xs">Logout</a>
+      {% else %}
+        <a href="/login" class="text-slate-300 hover:text-white text-xs">Login with Discord</a>
+      {% endif %}
+    </nav>
+  </header>
+  <main class="max-w-4xl mx-auto px-4 py-6">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

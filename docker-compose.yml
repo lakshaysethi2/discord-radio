@@ -1,0 +1,139 @@
+# Discord TV Bot — docker-compose.
+#
+# All operations go through Make targets that wrap `docker compose`.
+# Nothing needs to run on the host except Docker itself.
+#
+# Services:
+#   file-provider  ─ FastAPI + Telethon/Local backends
+#   bot            ─ Discord bot (long-running)
+#   dashboard      ─ FastAPI admin UI
+#   test           ─ one-shot: pytest against the mounted source tree
+#   dev            ─ interactive shell (`make dev`) — for ad-hoc python/sqlite
+#
+# `data/` and `cache/` are bind-mounted so the same SQLite files are shared
+# between bot + dashboard + file-provider.
+
+services:
+
+  file-provider:
+    build:
+      context: .
+      dockerfile: file_provider/Dockerfile
+    image: discord-radio/file-provider:latest
+    container_name: tvbot-file-provider
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      FILE_PROVIDER_DB_PATH: /data/provider.db
+      FILE_PROVIDER_CACHE_PATH: /cache
+      LOCAL_MEDIA_PATH: /media
+      FILE_PROVIDER_HOST: 0.0.0.0
+      FILE_PROVIDER_PORT: 8001
+    volumes:
+      - ./data:/data
+      - ./cache:/cache
+      - ./media:/media:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: discord-radio/bot:latest
+    container_name: tvbot-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_PATH: /data/tv.db
+      CACHE_PATH: /cache
+      FILE_PROVIDER_BASE_URL: http://file-provider:8001
+    volumes:
+      - ./data:/data
+      - ./cache:/cache
+    depends_on:
+      file-provider:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sqlite3; sqlite3.connect('/data/tv.db').execute('SELECT 1')"]
+      interval: 60s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: discord-radio/bot:latest  # same image, different command
+    container_name: tvbot-dashboard
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_PATH: /data/tv.db
+      FILE_PROVIDER_BASE_URL: http://file-provider:8001
+      DASHBOARD_PORT: 8000
+    command: >
+      python -m uvicorn dashboard.main:app
+      --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*
+    ports:
+      - "${DASHBOARD_PORT:-8000}:8000"
+    volumes:
+      - ./data:/data
+    depends_on:
+      bot:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/login', timeout=3).status in (200,307) else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # --------------------------------------------------------------- one-shot
+  # `make test`, `make lint`, `make format` all run inside this container.
+  # The source tree is mounted read-write (so `format` can rewrite files) and
+  # a scratch tmpfs is provided for pytest artifacts.
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: discord-radio/bot:latest
+    profiles: ["dev"]  # don't start with `docker compose up`
+    volumes:
+      - .:/app
+    working_dir: /app
+    # Override user so mounted-file writes have the right ownership on Linux.
+    # `${TEST_UID}:${TEST_GID}` is set by the Makefile from the host — falls
+    # back to 1000:1000 (matches the `tvbot` user baked into the image).
+    user: "${TEST_UID:-1000}:${TEST_GID:-1000}"
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: /app
+      HOME: /tmp  # numeric uid without a homedir → point HOME somewhere writable
+    entrypoint: ["/usr/bin/tini", "--"]
+    command: ["python", "-m", "pytest", "-q"]
+
+  # Interactive dev shell — `make dev`.
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: discord-radio/bot:latest
+    profiles: ["dev"]
+    volumes:
+      - .:/app
+      - ./data:/data
+      - ./cache:/cache
+    working_dir: /app
+    user: "${TEST_UID:-1000}:${TEST_GID:-1000}"
+    environment:
+      PYTHONPATH: /app
+      HOME: /tmp
+    entrypoint: ["/bin/bash"]
+    stdin_open: true
+    tty: true
