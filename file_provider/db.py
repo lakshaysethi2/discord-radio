@@ -60,6 +60,43 @@ SCHEMA: tuple[str, ...] = (
         value TEXT
     )
     """,
+    # ---- torrent client state --------------------------------------------
+    # aria2 owns the actual download state. These tables are the durable
+    # application-side index used by the dashboard and the torrent provider.
+    """
+    CREATE TABLE IF NOT EXISTS torrents (
+        gid              TEXT PRIMARY KEY,
+        name             TEXT NOT NULL DEFAULT '',
+        info_hash        TEXT,
+        source           TEXT NOT NULL DEFAULT '',
+        status           TEXT NOT NULL DEFAULT 'waiting',
+        total_length     INTEGER NOT NULL DEFAULT 0,
+        completed_length INTEGER NOT NULL DEFAULT 0,
+        download_speed   INTEGER NOT NULL DEFAULT 0,
+        upload_speed     INTEGER NOT NULL DEFAULT 0,
+        error_code       TEXT,
+        error_message    TEXT,
+        added_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_torrents_status ON torrents(status)",
+    """
+    CREATE TABLE IF NOT EXISTS torrent_files (
+        gid              TEXT NOT NULL,
+        file_index       INTEGER NOT NULL,
+        path             TEXT NOT NULL,
+        length           INTEGER NOT NULL DEFAULT 0,
+        completed_length INTEGER NOT NULL DEFAULT 0,
+        selected         INTEGER NOT NULL DEFAULT 1,
+        is_complete      INTEGER NOT NULL DEFAULT 0,
+        playlist_enabled INTEGER NOT NULL DEFAULT 0,
+        media_override   INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(gid, file_index),
+        FOREIGN KEY(gid) REFERENCES torrents(gid) ON DELETE CASCADE
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_torrent_files_playlist ON torrent_files(playlist_enabled)",
 )
 
 # Well-known state keys.
@@ -121,6 +158,13 @@ class ProviderDB:
         cols = {row[1] for row in cur.fetchall()}
         if "has_video" not in cols:
             cur.execute("ALTER TABLE tracks ADD COLUMN has_video INTEGER NOT NULL DEFAULT 0")
+
+        cur.execute("PRAGMA table_info(torrent_files)")
+        torrent_file_cols = {row[1] for row in cur.fetchall()}
+        if "media_override" not in torrent_file_cols:
+            cur.execute(
+                "ALTER TABLE torrent_files ADD COLUMN media_override INTEGER NOT NULL DEFAULT 0"
+            )
 
     # -------------------------------------------------------------- helpers
     def execute(self, sql: str, params: tuple | dict = ()) -> sqlite3.Cursor:
@@ -359,6 +403,164 @@ class ProviderDB:
 
     def forget_cache(self, track_id: str) -> None:
         self.execute("DELETE FROM cache_entries WHERE track_id=?", (track_id,))
+
+    # ------------------------------------------------------------- torrents
+    def upsert_torrent(self, torrent: dict) -> None:
+        """Persist the latest status reported by the torrent client."""
+        self.execute(
+            """
+            INSERT INTO torrents(
+                gid, name, info_hash, source, status, total_length,
+                completed_length, download_speed, upload_speed, error_code,
+                error_message
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(gid) DO UPDATE SET
+                name=CASE
+                    WHEN excluded.name != '' THEN excluded.name
+                    WHEN substr(torrents.name, 1, 10) = '[METADATA]' THEN ''
+                    ELSE torrents.name
+                END,
+                info_hash=COALESCE(excluded.info_hash, torrents.info_hash),
+                status=excluded.status,
+                total_length=excluded.total_length,
+                completed_length=excluded.completed_length,
+                download_speed=excluded.download_speed,
+                upload_speed=excluded.upload_speed,
+                error_code=excluded.error_code,
+                error_message=excluded.error_message,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                torrent["gid"],
+                torrent.get("name") or "",
+                torrent.get("info_hash"),
+                torrent.get("source") or "",
+                torrent.get("status") or "waiting",
+                int(torrent.get("total_length") or 0),
+                int(torrent.get("completed_length") or 0),
+                int(torrent.get("download_speed") or 0),
+                int(torrent.get("upload_speed") or 0),
+                str(torrent.get("error_code")) if torrent.get("error_code") else None,
+                torrent.get("error_message"),
+            ),
+        )
+
+    def list_torrents(self) -> list[sqlite3.Row]:
+        return self.fetchall("SELECT * FROM torrents ORDER BY added_at DESC, gid")
+
+    def torrent(self, gid: str) -> sqlite3.Row | None:
+        return self.fetchone("SELECT * FROM torrents WHERE gid=?", (gid,))
+
+    def upsert_torrent_file(self, gid: str, file_info: dict) -> None:
+        self.execute(
+            """
+            INSERT INTO torrent_files(
+                gid, file_index, path, length, completed_length, selected, is_complete
+            ) VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(gid, file_index) DO UPDATE SET
+                path=excluded.path,
+                length=excluded.length,
+                completed_length=excluded.completed_length,
+                selected=excluded.selected,
+                is_complete=excluded.is_complete
+            """,
+            (
+                gid,
+                int(file_info["file_index"]),
+                str(file_info.get("path") or ""),
+                int(file_info.get("length") or 0),
+                int(file_info.get("completed_length") or 0),
+                1 if file_info.get("selected", True) else 0,
+                1 if file_info.get("is_complete") else 0,
+            ),
+        )
+
+    def torrent_files(self, gid: str) -> list[sqlite3.Row]:
+        return self.fetchall(
+            "SELECT * FROM torrent_files WHERE gid=? ORDER BY file_index", (gid,)
+        )
+
+    def torrent_file(self, gid: str, file_index: int) -> sqlite3.Row | None:
+        return self.fetchone(
+            "SELECT * FROM torrent_files WHERE gid=? AND file_index=?", (gid, int(file_index))
+        )
+
+    def set_torrent_file_enabled(
+        self, gid: str, file_index: int, enabled: bool, *, media_override: bool = False
+    ) -> None:
+        cur = self.execute(
+            "UPDATE torrent_files SET playlist_enabled=?, media_override=? "
+            "WHERE gid=? AND file_index=?",
+            (1 if enabled else 0, 1 if enabled and media_override else 0, gid, int(file_index)),
+        )
+        if cur.rowcount == 0:
+            raise KeyError(f"unknown torrent file {gid}/{file_index}")
+
+    def selected_torrent_files(self) -> list[sqlite3.Row]:
+        return self.fetchall(
+            """
+            SELECT torrent_files.*, torrents.name AS torrent_name, torrents.status AS torrent_status
+            FROM torrent_files
+            JOIN torrents ON torrents.gid = torrent_files.gid
+            WHERE torrent_files.playlist_enabled=1
+            ORDER BY torrents.added_at, torrent_files.gid, torrent_files.file_index
+            """
+        )
+
+    def remove_torrent(self, gid: str) -> list[tuple[str, str]]:
+        """Remove a torrent and its playlist/cache rows.
+
+        Returns ``(track_id, cache_path)`` pairs so the service can unlink the
+        cached bytes after the SQL transaction has completed.
+        """
+        with self.transaction() as cur:
+            cur.execute(
+                """
+                SELECT tracks.track_id, cache_entries.file_path
+                FROM tracks
+                LEFT JOIN cache_entries ON cache_entries.track_id=tracks.track_id
+                WHERE tracks.provider='torrent' AND tracks.source_ref LIKE ?
+                """,
+                (f"{gid}:%",),
+            )
+            removed = [(r[0], r[1]) for r in cur.fetchall()]
+            cur.execute(
+                "DELETE FROM cache_entries WHERE track_id IN "
+                "(SELECT track_id FROM tracks WHERE provider='torrent' AND source_ref LIKE ?)",
+                (f"{gid}:%",),
+            )
+            cur.execute(
+                "DELETE FROM tracks WHERE provider='torrent' AND source_ref LIKE ?", (f"{gid}:%",)
+            )
+            cur.execute("DELETE FROM torrent_files WHERE gid=?", (gid,))
+            cur.execute("DELETE FROM torrents WHERE gid=?", (gid,))
+        return removed
+
+    def remove_provider_tracks_not_in(
+        self, provider: str, source_refs: set[str]
+    ) -> list[tuple[str, str]]:
+        """Remove stale rows after a successful authoritative provider scan."""
+        with self.transaction() as cur:
+            if source_refs:
+                placeholders = ",".join("?" for _ in source_refs)
+                args: tuple[object, ...] = (provider, *sorted(source_refs))
+                where = f"provider=? AND source_ref NOT IN ({placeholders})"
+            else:
+                args = (provider,)
+                where = "provider=?"
+            cur.execute(
+                f"SELECT tracks.track_id, cache_entries.file_path FROM tracks "
+                f"LEFT JOIN cache_entries ON cache_entries.track_id=tracks.track_id WHERE {where}",
+                args,
+            )
+            removed = [(r[0], r[1]) for r in cur.fetchall()]
+            cur.execute(
+                f"DELETE FROM cache_entries WHERE track_id IN "
+                f"(SELECT track_id FROM tracks WHERE {where})",
+                args,
+            )
+            cur.execute(f"DELETE FROM tracks WHERE {where}", args)
+        return removed
 
     # ------------------------------------------------------------- health
     def mark_provider(self, provider: str, healthy: bool, error: str | None = None) -> None:
