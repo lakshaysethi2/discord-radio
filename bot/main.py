@@ -94,6 +94,17 @@ class RadioClock:
         self._started_at = time.monotonic()
         self._base_offset = max(0.0, float(base_offset))
 
+    def reset(self, offset: float = 0.0) -> None:
+        """Set the cursor to a frozen ``offset`` without starting the clock.
+
+        Used when an explicit track is selected while nobody is listening: the
+        shared cursor is parked at the start of the chosen track, but the clock
+        stays paused until `sync_radio_state()` decides playback should run.
+        """
+        self._base_offset = max(0.0, float(offset))
+        self._playing = False
+        self._started_at = None
+
     def pause(self) -> None:
         if self._playing:
             # Freeze at the exact position we are currently at.
@@ -340,15 +351,19 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             if not track.ready or not track.local_path:
                 return f"error: track {track_id} not ready"
             # Playing a chosen track is an explicit play intent: clear any
-            # manual pause and reset the shared cursor to offset 0.
+            # manual pause, reset the shared cursor to offset 0, then reconcile
+            # the effective radio state. If no listeners exist the clock stays
+            # frozen at 0 (via sync_radio_state) until someone joins — it must
+            # not start advancing in the background while nobody is listening.
             admin_paused = False
-            radio.start(0)
+            radio.reset(0)
             state.playback_position_seconds = 0
             for st in stations.values():
                 if st.listener_count > 0:
                     await st.player.start(track)
                 with contextlib.suppress(Exception):
                     await st.now_playing.post_or_replace(track)
+            sync_radio_state(stations, radio, state, admin_paused=admin_paused)
             return f"ok:playing:{track_id}"
         if command == "refresh_playlist":
             # File-provider owns playlists — ask it to rescan.

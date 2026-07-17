@@ -169,3 +169,61 @@ async def test_dashboard_pause_freezes_clock_and_resume_keeps_position(monkeypat
     assert track is not None
     # Critical: seek equals the pause offset (30), not the wall-clock (330).
     assert stations["g1"].player.starts == [(track, 30.0)]
+
+
+def test_radio_clock_reset_is_frozen(monkeypatch) -> None:
+    seq = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: seq[0])
+    rc = RadioClock()
+    rc.start(50.0)
+    seq[0] = 1010.0  # 10s elapsed -> 50 + 10
+    assert rc.position() == 60.0
+
+    # reset parks the cursor at a frozen offset without starting the clock.
+    rc.reset(0)
+    assert rc.is_playing() is False
+    seq[0] = 1660.0  # a minute passes
+    assert rc.position() == 0.0  # still frozen at 0
+
+
+async def test_play_track_with_no_listeners_freezes_clock_at_zero(monkeypatch) -> None:
+    """Regression (2nd review, high): selecting a track from the dashboard
+    while nobody is listening must NOT start the shared RadioClock. The clock
+    must stay frozen at offset 0 until a listener joins — otherwise the first
+    joiner would start mid-track, skipping the opening minutes nobody heard.
+
+    Scenario: 0 listeners -> play_track -> 10 min wall-clock passes -> first
+    listener joins. The joiner must start at 0, not 600s in.
+    """
+    seq = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: seq[0])
+
+    radio = RadioClock()
+    radio.init_from_state(0.0, playing=False)  # currently paused
+    state = FakeState("t1")
+
+    # No servers have listeners yet.
+    stations = {"g1": FakeStation(listener_count=0)}
+
+    # Dashboard "Play now": reset cursor to 0, then reconcile radio state.
+    admin_paused = False
+    radio.reset(0)
+    state.playback_position_seconds = 0
+    sync_radio_state(stations, radio, state, admin_paused=admin_paused)
+
+    # With no listeners, the clock must remain frozen at 0.
+    assert radio.is_playing() is False
+    assert radio.position() == 0.0
+
+    # Ten minutes of wall-clock time pass with nobody listening.
+    seq[0] = 1600.0
+    # The clock must NOT have advanced to 600s.
+    assert radio.position() == 0.0
+
+    # First listener joins: they must start at offset 0, not 600s in.
+    stations["g1"].listener_count = 1
+    track = await resume_station_at_radio_position(
+        stations["g1"].player, FakeProvider(_track()), state, radio
+    )
+    assert track is not None
+    assert stations["g1"].player.starts == [(track, 0.0)]

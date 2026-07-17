@@ -6,7 +6,7 @@ voice/text/embeds/milestones), admins manage it from the dashboard **Servers**
 page, and the legacy single-guild env vars became an optional one-time bootstrap.
 
 ## Test scoreboard
-- **355 tests passing** (0 failing, 0 skipped)
+- **357 tests passing** (0 failing, 0 skipped)
 - `ruff check .` clean · `ruff format --check .` clean
 - `make test`, `make lint`, `make help` all work
 
@@ -147,6 +147,13 @@ skipping the paused interval.
   test_dashboard_pause_freezes_clock_and_resume_keeps_position` reproduces the
   exact scenario (radio at 30s → admin pause → 5 min wall-clock passes → admin
   resume) and asserts the resumed seek is 30s, not 330s.
+- Same review pass also flagged that `play_track` started the `RadioClock`
+  unconditionally — so with zero listeners the clock advanced in the background
+  and a later joiner landed mid-track. Added `RadioClock.reset(offset=0)` (a
+  frozen base offset, no clock start) and made `play_track` reconcile via
+  `sync_radio_state()`, so the cursor stays frozen at 0 until a listener joins.
+  Regression test `test_play_track_with_no_listeners_freezes_clock_at_zero`
+  asserts the first joiner starts at 0, not 600s in.
 
-Verification: `.venv/bin/python -m pytest -q` → **355 passed**;
+Verification: `.venv/bin/python -m pytest -q` → **357 passed**;
 `ruff check .` clean; `ruff format --check .` clean.
