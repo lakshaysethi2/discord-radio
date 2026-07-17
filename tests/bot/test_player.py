@@ -306,4 +306,4 @@ class TestPlayerVolume:
 
     async def test_volume_is_clamped(self, ctx: Ctx) -> None:
         await ctx.player.set_volume(999)
-        assert ctx.state.stream_volume_percent == 150
+        assert ctx.state.stream_volume_percent == 250

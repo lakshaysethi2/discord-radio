@@ -364,7 +364,7 @@ class TestVolumeControls:
     ) -> None:
         response = client.post(
             "/controls/volume",
-            data={"volume_percent": "400", "csrf": "csrf-test"},
+            data={"volume_percent": "300", "csrf": "csrf-test"},
             cookies=admin_cookie,
         )
         assert response.status_code == 422

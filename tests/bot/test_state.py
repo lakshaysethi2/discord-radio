@@ -101,6 +101,6 @@ class TestStreamVolume:
         state.stream_volume_percent = 125
         assert state.stream_volume_percent == 125
         state.stream_volume_percent = 999
-        assert state.stream_volume_percent == 150
+        assert state.stream_volume_percent == 250
         state.stream_volume_percent = 1
         assert state.stream_volume_percent == 50

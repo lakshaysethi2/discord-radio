@@ -421,7 +421,7 @@ def create_app(
         if not sess.get("csrf") or not hmac.compare_digest(sess["csrf"], csrf):
             raise HTTPException(status_code=403, detail="invalid CSRF token")
         if not 50 <= volume_percent <= 150:
-            raise HTTPException(status_code=422, detail="volume must be between 50 and 150")
+            raise HTTPException(status_code=422, detail="volume must be between 50 and 250")
         commands.enqueue(
             app.state.db,
             command="set_volume",

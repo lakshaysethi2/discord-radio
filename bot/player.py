@@ -241,7 +241,7 @@ class Player:
 
     async def set_volume(self, volume_percent: int) -> int:
         """Persist global gain and restart the active source at its exact position."""
-        volume = min(150, max(50, int(volume_percent)))
+        volume = min(250, max(50, int(volume_percent)))
         async with self._lock:
             self.state.stream_volume_percent = volume
             if self.current_track is not None and self.voice_client.is_playing():

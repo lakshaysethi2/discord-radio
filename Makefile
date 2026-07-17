@@ -143,10 +143,10 @@ resume:  ## Resume/play playback
 	$(COMPOSE) exec bot \
 	  python -c "from db.database import Database; from dashboard.commands import enqueue; enqueue(Database('/data/tv.db'), command='resume', requested_by='CLI'); print('Queued resume command')"
 
-volume:  ## Set global stream gain: make volume VOLUME=125 (50-150)
-	@test -n "$(VOLUME)" || (echo "Usage: make volume VOLUME=125 (50-150)"; exit 2)
+volume:  ## Set global stream gain: make volume VOLUME=125 (50-250)
+	@test -n "$(VOLUME)" || (echo "Usage: make volume VOLUME=125 (50-250)"; exit 2)
 	@case "$(VOLUME)" in *[!0-9]*|"") echo "VOLUME must be an integer"; exit 2;; esac
-	@[ "$(VOLUME)" -ge 50 ] && [ "$(VOLUME)" -le 150 ] || (echo "VOLUME must be 50-150"; exit 2)
+	@[ "$(VOLUME)" -ge 50 ] && [ "$(VOLUME)" -le 250 ] || (echo "VOLUME must be 50-250"; exit 2)
 	$(COMPOSE) exec bot \
 	  python -c "from db.database import Database; from dashboard.commands import enqueue; enqueue(Database('/data/tv.db'), command='set_volume', requested_by='CLI', payload={'volume_percent': $(VOLUME)}); print('Queued volume command')"
 

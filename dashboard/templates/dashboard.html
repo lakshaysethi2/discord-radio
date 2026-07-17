@@ -46,7 +46,7 @@
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <label for="volume_percent" class="text-slate-400">Stream volume</label>
       <select id="volume_percent" name="volume_percent" class="rounded bg-slate-950 border border-slate-700 px-2 py-1">
-        {% for volume in (50, 75, 100, 125, 150) %}<option value="{{ volume }}" {% if volume == stream_volume_percent %}selected{% endif %}>{{ volume }}%</option>{% endfor %}
+        {% for volume in (50, 75, 100, 125, 150, 175, 200, 225, 250) %}<option value="{{ volume }}" {% if volume == stream_volume_percent %}selected{% endif %}>{{ volume }}%</option>{% endfor %}
       </select>
       <button class="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500">Apply</button>
       <span class="text-xs text-slate-500">Global to everyone in this voice channel</span>

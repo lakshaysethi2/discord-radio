@@ -155,8 +155,8 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 volume = int((payload or {}).get("volume_percent"))
             except (TypeError, ValueError):
                 return "error: set_volume requires integer payload {volume_percent}"
-            if not 50 <= volume <= 150:
-                return "error: volume must be between 50 and 150"
+            if not 50 <= volume <= 250:
+                return "error: volume must be between 50 and 250"
             applied = await player.set_volume(volume)
             return f"ok:volume:{applied}"
         if command == "play_track":
