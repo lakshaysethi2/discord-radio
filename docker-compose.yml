@@ -1,0 +1,88 @@
+# Discord TV Bot — docker-compose.
+#
+# Three services share `./data` (SQLite dbs) and `./cache` (audio files).
+# Ports: only the dashboard is exposed externally (Cloudflare / your reverse
+# proxy sits in front). The file-provider stays on the internal Docker network.
+
+services:
+
+  file-provider:
+    build:
+      context: .
+      dockerfile: file_provider/Dockerfile
+    image: discord-radio/file-provider:latest
+    container_name: tvbot-file-provider
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      FILE_PROVIDER_DB_PATH: /data/provider.db
+      FILE_PROVIDER_CACHE_PATH: /cache
+      LOCAL_MEDIA_PATH: /media
+      FILE_PROVIDER_HOST: 0.0.0.0
+      FILE_PROVIDER_PORT: 8001
+    volumes:
+      - ./data:/data
+      - ./cache:/cache
+      - ./media:/media:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: discord-radio/bot:latest
+    container_name: tvbot-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_PATH: /data/tv.db
+      CACHE_PATH: /cache
+      FILE_PROVIDER_BASE_URL: http://file-provider:8001
+    volumes:
+      - ./data:/data
+      - ./cache:/cache
+    depends_on:
+      file-provider:
+        condition: service_healthy
+    healthcheck:
+      # Bot has no HTTP surface — check that the process is alive and its
+      # SQLite is writable.
+      test: ["CMD", "python", "-c", "import sqlite3; sqlite3.connect('/data/tv.db').execute('SELECT 1')"]
+      interval: 60s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: discord-radio/bot:latest  # same image, different command
+    container_name: tvbot-dashboard
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_PATH: /data/tv.db
+      FILE_PROVIDER_BASE_URL: http://file-provider:8001
+      DASHBOARD_PORT: 8000
+    command: >
+      python -m uvicorn dashboard.main:app
+      --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*
+    ports:
+      - "${DASHBOARD_PORT:-8000}:8000"
+    volumes:
+      - ./data:/data
+    depends_on:
+      bot:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/login', timeout=3).status in (200,307) else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
