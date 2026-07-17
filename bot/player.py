@@ -216,6 +216,9 @@ class Player:
         """Resume playback of the current track at the saved position.
 
         Re-fetches the track via the provider in case the cache evicted it.
+        No-op (with a log line) if the provider says the track isn't ready —
+        the caller can retry, or the empty-channel logic will try again next
+        time someone joins.
         """
         async with self._lock:
             track_id = self.state.current_track_id
@@ -225,6 +228,9 @@ class Player:
             resume_at = float(self.state.playback_position_seconds)
             # Even if the cache still has it, /tracks/{id} guarantees it.
             track = await self.provider.get_by_id(track_id)
+            if not track.ready or not track.local_path:
+                log.warning("resume: track %s not ready", track_id)
+                return
             await self._start_locked(track, seek_seconds=resume_at)
 
     async def skip(self) -> None:

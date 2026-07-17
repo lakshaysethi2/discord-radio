@@ -208,6 +208,16 @@ class TestPlayerResume:
         await ctx.player.resume()
         assert ctx.voice.play_calls == 0
 
+    async def test_resume_bails_if_track_not_ready(self, ctx: Ctx) -> None:
+        """A provider returning ready=False must not start playback."""
+        await ctx.player.start(make_track())
+        await ctx.player.pause()
+        # Swap the provider's track for a not-ready one.
+        ctx.provider.tracks["t1"] = make_track(ready=False, local_path="")
+        play_count_before = ctx.voice.play_calls
+        await ctx.player.resume()
+        assert ctx.voice.play_calls == play_count_before  # no new play
+
 
 class TestPlayerSkipAndStop:
     async def test_skip_calls_stop_and_lets_on_finish_fire(self, ctx: Ctx) -> None:

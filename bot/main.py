@@ -55,6 +55,10 @@ async def _resume_or_start(
         if resume_id:
             track = await provider.get_by_id(resume_id)
             log.info("resuming %s @ %ds", track.title, resume_at)
+            if not track.ready or not track.local_path:
+                log.warning("track %s not ready — falling back to /current", resume_id)
+                track = await provider.current()
+                resume_at = 0
             await player.start(track, seek_seconds=resume_at)
         else:
             track = await provider.current()
@@ -155,6 +159,8 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
         for attempt in range(1, 11):
             try:
                 nxt = await provider.next()
+                if not nxt.ready or not nxt.local_path:
+                    raise RuntimeError(f"track {nxt.track_id} not ready")
                 await _player.start(nxt)
                 with contextlib.suppress(Exception):
                     await now_playing.post_or_replace(nxt)
