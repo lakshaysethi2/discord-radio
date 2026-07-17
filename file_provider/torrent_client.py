@@ -525,7 +525,14 @@ class TorrentManager:
         for row in self.db.list_torrents():
             gid = row["gid"]
             try:
-                out.append(self.sync_torrent(gid))
+                torrent = self.sync_torrent(gid)
+                if self._is_duplicate_error(torrent) and torrent.info_hash:
+                    try:
+                        out.append(self._finish_added(gid))
+                    except TorrentClientError as exc:
+                        log.warning("removed duplicate torrent %s: %s", gid, exc)
+                else:
+                    out.append(torrent)
             except TorrentSizeLimitError as exc:
                 # The row and aria2 job were removed by sync_torrent.
                 log.warning("removed oversized torrent %s: %s", gid, exc)
@@ -548,7 +555,7 @@ class TorrentManager:
         if not gid:
             raise TorrentClientError("aria2 did not return a download id")
         self.db.upsert_torrent({"gid": gid, "source": magnet, "status": "waiting"})
-        return self._sync_or_db(gid)
+        return self._finish_added(gid)
 
     def add_torrent_file(self, content: bytes, filename: str = "upload.torrent") -> Torrent:
         if not content:
@@ -579,7 +586,7 @@ class TorrentManager:
         self.db.upsert_torrent(
             {"gid": gid, "source": str(upload_path), "status": "waiting"}
         )
-        return self._sync_or_db(gid)
+        return self._finish_added(gid)
 
     def _sync_or_db(self, gid: str) -> Torrent:
         try:
@@ -590,6 +597,32 @@ class TorrentManager:
             # Metadata for a magnet is legitimately unavailable for a short
             # period. The dashboard can show the waiting row immediately.
             return self._torrent_from_db(gid)
+
+    @staticmethod
+    def _is_duplicate_error(torrent: Torrent) -> bool:
+        return torrent.status == "error" and "already registered" in (
+            torrent.error_message or ""
+        ).lower()
+
+    def _finish_added(self, gid: str) -> Torrent:
+        """Index a newly added job and collapse duplicate-infohash errors."""
+        torrent = self._sync_or_db(gid)
+        if not self._is_duplicate_error(torrent) or not torrent.info_hash:
+            return torrent
+
+        existing = self.db.torrent_by_info_hash(torrent.info_hash, exclude_gid=gid)
+        with contextlib.suppress(TorrentClientError):
+            self.rpc.call("aria2.forceRemove", [gid])
+        self.db.remove_torrent(gid)
+        if existing is not None:
+            try:
+                return self.sync_torrent(existing["gid"])
+            except TorrentClientError:
+                return self._torrent_from_db(existing["gid"])
+        raise TorrentClientError(
+            f"torrent {torrent.info_hash} is already registered in aria2; "
+            "remove the existing torrent or use the existing dashboard entry"
+        )
 
     def _download_options(self) -> dict[str, str]:
         return {
@@ -631,10 +664,19 @@ class TorrentManager:
             if bool(row["playlist_enabled"])
         ]
         if enabled_indexes:
-            self.rpc.call(
-                "aria2.changeOption",
-                [gid, {"select-file": ",".join(str(index) for index in enabled_indexes)}],
-            )
+            try:
+                self.rpc.call(
+                    "aria2.changeOption",
+                    [gid, {"select-file": ",".join(str(index) for index in enabled_indexes)}],
+                )
+            except TorrentClientError as exc:
+                # aria2 refuses option changes for completed/error jobs. The
+                # playlist selection is still valid when the file is already
+                # present on disk, so retain the DB selection in that case.
+                torrent = self._torrent_from_db(gid)
+                if torrent.status not in {"complete", "error", "paused"}:
+                    raise
+                log.warning("aria2 could not change file selection for %s: %s", gid, exc)
         return self._torrent_from_db(gid)
 
     def action(self, gid: str, action: str) -> Torrent | None:

@@ -451,6 +451,19 @@ class ProviderDB:
     def torrent(self, gid: str) -> sqlite3.Row | None:
         return self.fetchone("SELECT * FROM torrents WHERE gid=?", (gid,))
 
+    def torrent_by_info_hash(self, info_hash: str, *, exclude_gid: str | None = None) -> sqlite3.Row | None:
+        if exclude_gid is None:
+            return self.fetchone(
+                "SELECT * FROM torrents WHERE lower(info_hash)=lower(?) "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (info_hash,),
+            )
+        return self.fetchone(
+            "SELECT * FROM torrents WHERE lower(info_hash)=lower(?) AND gid != ? "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (info_hash, exclude_gid),
+        )
+
     def upsert_torrent_file(self, gid: str, file_info: dict) -> None:
         self.execute(
             """
