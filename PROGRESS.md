@@ -1,50 +1,56 @@
 # PROGRESS.md — snapshot for a fresh session
 
-Last updated: **iteration 15** — all 12 blueprint phases done, three review passes complete.
+Last updated: **iteration 20** — all 12 blueprint phases complete + four hostile-review passes + real smoke tests of both services.
 
 ## Test scoreboard
-- **255 tests passing** (0 failing, 0 skipped)
-- **84% line coverage** — uncovered code is I/O boundary only:
-  - `file_provider/providers/telegram.py` — needs live Telethon credentials
-  - `bot/milestones.py NowPlaying.post_or_replace` — real discord.py embed builder
-  - `bot/scheduler.py _checkpoint_loop`/`_monthly_loop`/`_command_loop` — timing loops (marked `pragma: no cover`)
+- **263 tests passing** (0 failing, 0 skipped)
+- **84% line coverage** (uncovered = live discord.py sends, live Telethon MTProto, timing loops explicitly marked `pragma: no cover`)
 - `ruff check .` clean · `ruff format --check .` clean
+- `make test`, `make lint`, `make help` all work
 
 ## Test breakdown
 | Path                            | Tests | Focus                                                              |
 |---------------------------------|-------|--------------------------------------------------------------------|
-| tests/bot                       | 97    | player (state machine, seq race), tracker, milestones, scheduler   |
-| tests/dashboard                 | 63    | OAuth flow, session signing, queries, control queue, routes        |
-| tests/db                        | 16    | schema, migrations, bot_state, WAL                                 |
+| tests/bot                       | 105   | player (state machine, seq race, not-ready guards), tracker, milestones (checker + announcer), scheduler + drain, config, presence, main helpers (startup retry) |
+| tests/dashboard                 | 63    | OAuth flow, session signing, queries, control queue, all routes    |
+| tests/db                        | 16    | schema, migrations, bot_state kv, WAL                              |
 | tests/file_provider             | 51    | ProviderDB, LRU cache, LocalProvider, service + concurrency        |
 | tests/provider                  | 19    | HTTP client contract, retry, error paths                           |
 | tests/test_integration.py       | 9     | bot HTTP client ↔ real file-provider ASGI app                      |
-| tests/test_control_plane.py     | 3     | dashboard POST /controls → SQLite queue → bot scheduler → player   |
+| tests/test_control_plane.py     | 3     | dashboard POST /controls → SQLite queue → bot scheduler → fake player |
+
+## Smoke tests (real running processes)
+- **File provider on 127.0.0.1:18001** (iter 17): scanned 3 local mp3s, `/current`, `/next`, `/peek`, `/health` all returned correct JSON; cache hardlinks confirmed via `ls -la` (link count 2)
+- **Dashboard on 127.0.0.1:18000** (iter 18): `/` → 307 to `/dashboard`; unauth `/dashboard` → 307 to `/login`; `/login` → 307 to `discord.com/oauth2/authorize` with all params + signed state cookie; `/callback` without code → renders login with error; POST `/controls` unauth → 307 to `/login`
 
 ## All 12 phases done
 - **0** Scaffold, `.env.example`, deps, Makefile, pyproject
 - **1** SQLite layer (WAL, migrations, `bot_state` kv)
 - **2** `provider.client.FileProviderClient` (async httpx + retry)
-- **3** `file_provider/`: FastAPI + `ProviderDB` + LRU `Cache` + `LocalProvider` + `TelegramProvider` (Telethon MTProto, from `hawkins-tv` reference) + pre-fetch thread
+- **3** `file_provider/`: FastAPI + `ProviderDB` + LRU `Cache` + `LocalProvider` + `TelegramProvider` (Telethon MTProto, adapted from `hawkins-tv`) + pre-fetch thread with per-track locks
 - **4** `bot/`: `player.py` (FFmpeg + seq-guarded after-callback), `state.py`, `config.py`, `presence.py`, `main.py`
 - **5** `bot/tracker.py` — sessions, hourly checkpoint, orphan close, month rollover
 - **6** Pause/resume via `should_pause`/`should_resume` + `Player.pause`/`resume`
-- **7** `bot/milestones.py` — `MilestoneChecker` + `MilestoneAnnouncer` + `NowPlaying`
-- **8** `bot/scheduler.py` — monthly reset with `run_monthly_reset()`
-- **9** `dashboard/`: FastAPI + Discord OAuth2 + Jinja2 + control queue
+- **7** `bot/milestones.py` — `MilestoneChecker` (pure) + `MilestoneAnnouncer` (Discord I/O) + `NowPlaying` embed
+- **8** `bot/scheduler.py` — `run_monthly_reset()` with multi-month snapshotting
+- **9** `dashboard/`: FastAPI + Discord OAuth2 + Jinja2 + shared-SQLite control queue
 - **10** Dockerfile (bot+dashboard), Dockerfile (file-provider), `docker-compose.yml`, `.dockerignore`
-- **11** `.github/workflows/ci.yml` (lint + tests on 3.11/3.12 + docker build)
+- **11** `.github/workflows/ci.yml` (lint + tests on py3.11/3.12 + docker build)
 - **12** `README.md`, `docs/telegram-setup.md`, `docs/dashboard-setup.md`
 
-## Bugs found & fixed during review passes
-1. **Bot goes silent forever** if `provider.next()` fails → now retries with backoff up to 10 attempts.
-2. **Player double-advance race**: FFmpeg's late after-callback for a superseded track could fire `on_finish` for the *new* track → added `_play_seq` counter, callback discarded if seq mismatches. Two regression tests cover this.
-3. **Provider fetch race**: foreground + prefetch downloading the same file → per-track `_fetch_lock` with double-checked cache lookup. Regression test verifies exactly-once fetch under concurrency.
-4. **Empty-channel pause miss**: discord.py's cached `channel.members` may still contain the departing user → `_non_bot_members(exclude_user_id=...)` explicit filter.
-5. **Command queue can hang forever** on a stuck handler → per-command `asyncio.wait_for` timeout (30s default).
-6. **LocalProvider symlink escape** → `resolve()` + `relative_to()` guard on both scan and fetch.
-7. **Player coroutine leak** if loop closes mid-track → `loop.is_closed()` check + `coro.close()` on schedule failure.
-8. **Dashboard module import opened a real DB** → replaced module-level `app = create_app()` with `_LazyApp` proxy.
+## Bugs found & fixed across four review passes
+1. Bot silent-forever if `provider.next()` fails → retry with backoff (10 attempts).
+2. Player double-advance race: superseded track's late after-callback fired on_finish for the *new* track → `_play_seq` guard, two regression tests.
+3. Provider fetch race: foreground + prefetch downloading same file → per-track `_fetch_lock` + double-checked cache lookup, regression test verifies exactly-once fetch.
+4. Empty-channel pause miss: discord.py's stale member cache → `_non_bot_members(exclude_user_id=...)` explicit filter.
+5. Command queue hang: stuck handler blocked whole poll loop → per-command `asyncio.wait_for(timeout=30s)`.
+6. LocalProvider symlink escape → `resolve()` + `relative_to()` guard on both scan and fetch.
+7. Player coroutine leak on shutdown mid-track → `loop.is_closed()` check + `coro.close()`.
+8. Dashboard module-level `app = create_app()` opened a real DB on import → `_LazyApp` proxy.
+9. Not-ready tracks starting playback → guards in `Player.resume`, `_advance_and_announce`, `_resume_or_start`.
+10. Bot startup with file-provider down → exponential-backoff retry (20 attempts, up to 30s).
+11. FK on `cache_entries` prevented `rebuild_from_disk` and standalone cache tests → dropped FK, documented.
+12. `on_ready` fires again on reconnect → guard flag prevents re-init.
 
 ## What's still deliberately out (blueprint "nice-to-have")
 - Live watcher-count edits in Now Playing embed (V2 — rate-limit concerns)
@@ -52,16 +58,18 @@ Last updated: **iteration 15** — all 12 blueprint phases done, three review pa
 - SSE-driven dashboard
 - Discord slash-commands mirroring dashboard controls
 - Prometheus metrics
+- Rate-limit on milestone announcements (rare edge case)
 
 ## Deploy path
-1. Copy `.env.example` → `.env`, fill Discord token/guild/channels, admin ids, OAuth2, provider order.
-2. `docker compose up -d` — brings up file-provider, bot, dashboard.
-3. Telegram backend: first-run interactive Telethon auth via `docker compose run --rm file-provider ...` — see `docs/telegram-setup.md`.
-4. Put Cloudflare / nginx in front of the dashboard on :8000 (HTTPS + `--proxy-headers` already set).
+1. `cp .env.example .env` — fill Discord token/guild/channels, admin ids, OAuth2, provider order.
+2. `docker compose up -d` — brings up file-provider → bot → dashboard (with proper healthcheck ordering).
+3. For Telegram backend: first-run interactive Telethon auth via `docker compose run --rm file-provider ...` (see `docs/telegram-setup.md`).
+4. Put Cloudflare / nginx in front of dashboard on :8000 (HTTPS terminator; `--proxy-headers` already set).
 
-## Verification-in-CI status
-- `pytest -q` : 255 passing
-- `ruff check .` : clean
-- `ruff format --check .` : clean
-- `coverage report` : 84% (see per-module breakdown in the run)
-- Docker builds: not executed in this sandbox — CI builds both images.
+## How to resume in a fresh session
+1. `git status` — should be clean on `arena/019f6df3-discord-radio`
+2. `python -m venv .venv && source .venv/bin/activate`
+3. `pip install -r requirements.txt -r file_provider/requirements.txt`
+4. `make test` → 263 passing, ~5 seconds
+5. `make lint` → clean
+6. Check `PLAN.md` for outstanding items (all core work done; only nice-to-haves remain)

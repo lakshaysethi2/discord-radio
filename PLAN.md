@@ -108,10 +108,17 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [ ] Discord slash commands mirroring dashboard controls
 - [ ] Prometheus metrics endpoint
 
-## Post-implementation review items (added iter 10)
-- [ ] End-to-end integration test: spin up file-provider + fake voice + dashboard together
+## Post-implementation review items
+- [x] End-to-end integration test: bot's HTTP client vs real file-provider ASGI app (`tests/test_integration.py`)
+- [x] End-to-end control-plane test: dashboard POST → SQLite queue → bot scheduler → player (`tests/test_control_plane.py`)
+- [x] Add graceful handling in the bot when the file provider is fully down at startup (retry loop with backoff)
+- [x] Guard against not-ready tracks in `Player.resume` + `_advance_and_announce` + `_resume_or_start`
+- [x] Fix Player double-advance race with `_play_seq` counter (regression tests added)
+- [x] Fix Provider fetch race with per-track `_fetch_lock` (regression test added)
+- [x] Fix discord.py cache staleness with explicit `exclude_user_id` filter
+- [x] Add per-command timeout in `Scheduler.drain_commands` (30s default)
+- [x] Real smoke test of file-provider via curl (iter 17) — all endpoints verified
+- [x] Real smoke test of dashboard via curl (iter 18) — all routes verified
 - [ ] Verify Docker build actually succeeds locally (needs Docker in the sandbox — deferred to CI)
-- [ ] Add graceful handling in the bot when the file provider is fully down at startup (retry loop)
-- [ ] `MilestoneAnnouncer.check_and_announce` swallows errors — add rate-limiting so we don't spam
-- [ ] Consider a `/health` endpoint on the dashboard for the compose healthcheck (currently pings `/login`)
-- [ ] Session cookie `SameSite=lax` — dashboard actions require CSRF token already so fine, but document
+- [ ] `MilestoneAnnouncer.check_and_announce` — add rate-limiting so we don't spam if a user's totals rapidly cross multiple thresholds (rare; V2)
+- [ ] Consider a `/health` endpoint on the dashboard (currently the compose healthcheck pings `/login`; works fine)
