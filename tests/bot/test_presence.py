@@ -60,3 +60,28 @@ class TestShouldResume:
         # Someone else joins while another user is already present — playback
         # was already running, no need to resume.
         assert should_resume(non_bot_count_after_join=2, currently_paused=True) is False
+
+
+class TestNonBotMembersFilter:
+    """Verify the discord-cache-race workaround in `bot.main._non_bot_members`."""
+
+    def test_exclude_user_id_filters_departing_member(self) -> None:
+        from dataclasses import dataclass
+
+        from bot.main import _non_bot_members
+
+        @dataclass
+        class FakeMember:
+            id: int
+            bot: bool = False
+
+        @dataclass
+        class FakeChannel:
+            members: list
+
+        # Simulate stale cache: departing user still in .members.
+        ch = FakeChannel(members=[FakeMember(1), FakeMember(2), FakeMember(999, bot=True)])
+        assert len(_non_bot_members(ch)) == 2
+        assert len(_non_bot_members(ch, exclude_user_id="1")) == 1
+        assert len(_non_bot_members(ch, exclude_user_id="2")) == 1
+        assert len(_non_bot_members(ch, exclude_user_id="nobody")) == 2

@@ -128,3 +128,34 @@ class TestConcurrency:
         _wait_prefetch(service)
         # Sleep so prefetch has a chance to run
         time.sleep(0.05)
+
+    def test_fetch_lock_prevents_duplicate_provider_calls(self, db, cache, fake_provider) -> None:
+        """Two concurrent get_by_id for the same uncached track → one fetch."""
+        s = Service(db, cache, [fake_provider])
+        s.refresh_playlist()
+        tid = s.peek(1)[0].track_id
+
+        errors: list = []
+
+        def worker():
+            try:
+                s.get_by_id(tid)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
+        # The fake provider records every ensure_cached call. With the lock,
+        # we expect exactly ONE fetch for the same source_ref regardless of
+        # concurrent callers (plus possibly one from prefetch on a *different*
+        # track, but not on this one).
+        this_ref = fake_provider.list_tracks()[0].source_ref
+        assert fake_provider.fetches.count(this_ref) == 1
+        # Wait for any prefetch before teardown.
+        t = s._prefetch_thread
+        if t is not None:
+            t.join(timeout=5.0)

@@ -227,6 +227,39 @@ class TestPlayerSkipAndStop:
         assert len(called) == 1
         assert called[0].track_id == "t1"
 
+    async def test_late_after_callback_from_previous_start_ignored(self, ctx: Ctx) -> None:
+        """If start(t2) interrupts t1, t1's late after-callback must NOT advance."""
+        called: list[TrackResponse] = []
+
+        async def cb(_p, t):
+            called.append(t)
+
+        ctx.player.on_finish(cb)
+        await ctx.player.start(make_track())
+        stale_after = ctx.voice.after_cb  # captured for t1's session
+        await ctx.player.start(make_track(track_id="t2", playlist_position=1))
+        # Now fire the STALE callback (from t1's ffmpeg cleanup).
+        assert stale_after is not None
+        stale_after(None)
+        await asyncio.sleep(0.05)
+        # cb must NOT have been called — the seq check discarded it.
+        assert called == []
+
+    async def test_natural_finish_of_current_track_advances(self, ctx: Ctx) -> None:
+        """The 'live' after-callback (matching seq) still fires as intended."""
+        called: list[TrackResponse] = []
+
+        async def cb(_p, t):
+            called.append(t)
+
+        ctx.player.on_finish(cb)
+        await ctx.player.start(make_track())
+        # Simulate natural end of t1.
+        ctx.voice.after_cb(None)
+        await asyncio.sleep(0.05)
+        assert len(called) == 1
+        assert called[0].track_id == "t1"
+
     async def test_stop_hard_suppresses_finish(self, ctx: Ctx) -> None:
         called: list[TrackResponse] = []
 

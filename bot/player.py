@@ -115,9 +115,14 @@ class Player:
         self.clock = ElapsedClock()
         self.current_track: TrackResponse | None = None
         self._on_finish: FinishCallback | None = None
-        # Set while we're intentionally stopping (pause / skip) so the after-
-        # callback doesn't misinterpret it as a natural finish.
+        # Set while we're intentionally stopping (pause / stop_hard) so the
+        # after-callback doesn't misinterpret it as a natural finish.
         self._suppress_finish = False
+        # Monotonically increasing playback session id. Each `_start_locked`
+        # bumps it and stamps the closure with the new value; when the FFmpeg
+        # `after` callback for an old session fires, we ignore it. This
+        # prevents "double advance" when start() interrupts an existing track.
+        self._play_seq = 0
         self._lock = asyncio.Lock()
 
     # -------------------------------------------------------- registration
@@ -138,13 +143,14 @@ class Player:
             await self._start_locked(track, seek_seconds=seek_seconds)
 
     async def _start_locked(self, track: TrackResponse, *, seek_seconds: float) -> None:
-        # Stop any previous playback without firing on_finish for it.
+        # Stop any previous playback. We DON'T need to set _suppress_finish
+        # here — the seq check below discards the old callback safely.
         if self.voice_client.is_playing():
-            self._suppress_finish = True
             self.voice_client.stop()
-        # We're about to play a new source — its natural finish should fire
-        # the callback, so clear the suppression flag now.
         self._suppress_finish = False
+
+        self._play_seq += 1
+        my_seq = self._play_seq
 
         source = self.source_factory(track.local_path, seek_seconds)
         self.current_track = track
@@ -156,12 +162,25 @@ class Player:
         self.state.is_paused = False
 
         # `after` runs on FFmpeg's cleanup thread — schedule the callback back
-        # onto the main asyncio loop.
-        self.voice_client.play(source, after=self._after)
+        # onto the main asyncio loop. The captured `my_seq` lets us discard
+        # after-callbacks from previously-superseded sources.
+        def _after_bound(exc: BaseException | None, _seq: int = my_seq) -> None:
+            self._after(exc, expected_seq=_seq)
 
-    def _after(self, exc: BaseException | None) -> None:
+        self.voice_client.play(source, after=_after_bound)
+
+    def _after(self, exc: BaseException | None, *, expected_seq: int | None = None) -> None:
         if exc is not None:
             log.warning("ffmpeg after-callback error: %s", exc)
+        if expected_seq is not None and expected_seq != self._play_seq:
+            # This callback belongs to a superseded playback session — either
+            # we started a new track already, or we paused/stopped. Discard.
+            log.debug(
+                "ignoring after-callback for stale seq %s (current %s)",
+                expected_seq,
+                self._play_seq,
+            )
+            return
         if self._suppress_finish:
             return
         cb = self._on_finish
@@ -183,9 +202,9 @@ class Player:
     async def pause(self) -> None:
         """Stop audio, keep the position for later resume."""
         async with self._lock:
-            # Keep suppression set — the after-callback will land after we
-            # return, and we don't want it to trigger playlist advancement.
-            # It gets cleared next time _start_locked runs.
+            # Bump the seq so the after-callback from ffmpeg's stop is
+            # discarded — belt-and-braces on top of _suppress_finish.
+            self._play_seq += 1
             self._suppress_finish = True
             if self.voice_client.is_playing():
                 self.voice_client.stop()
@@ -219,6 +238,7 @@ class Player:
     async def stop_hard(self) -> None:
         """Stop audio, do not advance, do not persist position (used on shutdown)."""
         async with self._lock:
+            self._play_seq += 1
             self._suppress_finish = True
             if self.voice_client.is_playing():
                 self.voice_client.stop()

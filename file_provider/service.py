@@ -63,6 +63,17 @@ class Service:
         self._provider_by_name = {p.name: p for p in providers}
         self._lock = threading.RLock()
         self._prefetch_thread: threading.Thread | None = None
+        # Per-track fetch locks so foreground and prefetch never race on the
+        # same file. Access to _fetch_locks itself is guarded by _lock.
+        self._fetch_locks: dict[str, threading.Lock] = {}
+
+    def _fetch_lock(self, track_id: str) -> threading.Lock:
+        with self._lock:
+            lk = self._fetch_locks.get(track_id)
+            if lk is None:
+                lk = threading.Lock()
+                self._fetch_locks[track_id] = lk
+            return lk
 
     # ---------------------------------------------------------------- scan
     def refresh_playlist(self) -> dict:
@@ -159,7 +170,13 @@ class Service:
 
     # --------------------------------------------------------------- inner
     def _ensure_and_wrap(self, row) -> TrackPayload:
-        """Fetch if needed and build the JSON payload."""
+        """Fetch if needed and build the JSON payload.
+
+        Holds a per-track fetch lock while downloading so foreground callers
+        and the prefetch thread never race on the same file. The DB lookup
+        happens twice around the lock (double-check) so we don't block just
+        to re-report a fully-cached file.
+        """
         provider = self._provider_by_name.get(row["provider"])
         if provider is None:
             raise ProviderFetchError(f"unknown provider '{row['provider']}'")
@@ -170,17 +187,22 @@ class Service:
             local_path = cached
             ready = True
         else:
-            # Make room, then download.
-            needed = int(row["size_bytes"] or 0) or 50 * 1024 * 1024  # default 50 MB guess
-            protect = {row["track_id"]}
-            self.cache.evict_until_free(needed, protect=protect)
-            try:
-                local_path = provider.ensure_cached(row["source_ref"], target)
-                self.db.mark_provider(provider.name, healthy=True)
-            except ProviderFetchError:
-                self.db.mark_provider(provider.name, healthy=False, error="fetch failed")
-                raise
-            self.cache.record(row["track_id"], local_path)
+            with self._fetch_lock(row["track_id"]):
+                # Someone else may have populated it while we waited.
+                cached = self.cache.get(row["track_id"])
+                if cached is not None:
+                    local_path = cached
+                else:
+                    needed = int(row["size_bytes"] or 0) or 50 * 1024 * 1024
+                    protect = {row["track_id"]}
+                    self.cache.evict_until_free(needed, protect=protect)
+                    try:
+                        local_path = provider.ensure_cached(row["source_ref"], target)
+                        self.db.mark_provider(provider.name, healthy=True)
+                    except ProviderFetchError:
+                        self.db.mark_provider(provider.name, healthy=False, error="fetch failed")
+                        raise
+                    self.cache.record(row["track_id"], local_path)
             ready = True
 
         return TrackPayload(
@@ -229,14 +251,18 @@ class Service:
                 return
             target = self.cache.path_for(row["track_id"])
             try:
-                needed = int(row["size_bytes"] or 0) or 50 * 1024 * 1024
                 if self.db.closed:
                     return
-                self.cache.evict_until_free(needed, protect=self._current_and_next())
-                provider.ensure_cached(row["source_ref"], target)
-                if self.db.closed:
-                    return
-                self.cache.record(row["track_id"], target)
+                with self._fetch_lock(row["track_id"]):
+                    # If someone else cached it first, skip.
+                    if self.cache.get(row["track_id"]) is not None:
+                        return
+                    needed = int(row["size_bytes"] or 0) or 50 * 1024 * 1024
+                    self.cache.evict_until_free(needed, protect=self._current_and_next())
+                    provider.ensure_cached(row["source_ref"], target)
+                    if self.db.closed:
+                        return
+                    self.cache.record(row["track_id"], target)
                 self.db.mark_provider(provider.name, healthy=True)
                 log.info("prefetched %s", row["track_id"])
             except Exception as exc:

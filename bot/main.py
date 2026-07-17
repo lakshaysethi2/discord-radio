@@ -64,9 +64,19 @@ async def _resume_or_start(
         log.error("could not start playback: %s", exc)
 
 
-def _non_bot_members(channel) -> list:
-    """Return the list of human members currently in `channel`."""
-    return [m for m in channel.members if not m.bot]
+def _non_bot_members(channel, *, exclude_user_id: str | None = None) -> list:
+    """Return the list of human members currently in `channel`.
+
+    ``exclude_user_id`` is used from `on_voice_state_update`'s LEFT branch —
+    discord.py's cached member list may still contain the departing user at
+    handler-invocation time, so we filter them out explicitly to make the
+    empty-channel check reliable.
+    """
+    return [
+        m
+        for m in channel.members
+        if not m.bot and (exclude_user_id is None or str(m.id) != exclude_user_id)
+    ]
 
 
 async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — I/O heavy
@@ -252,7 +262,9 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             closed = tracker.close_session(user_id=event.user_id)
             if closed is not None:
                 await milestones.check_and_announce(closed.user_id)
-            listeners = _non_bot_members(before.channel)
+            # Explicitly exclude the departing user — discord.py's member
+            # cache may still include them at this point.
+            listeners = _non_bot_members(before.channel, exclude_user_id=event.user_id)
             if player is not None and should_pause(len(listeners), state.is_paused):
                 await player.pause()
 
