@@ -239,9 +239,11 @@ class FileProviderClient:
         if resp.status_code >= 500:  # pragma: no cover — retry already handled it
             raise ProviderError(f"POST /tracks/{track_id}/played -> HTTP {resp.status_code}")
 
-    async def refresh(self, archive_org_items: str | None = None) -> dict[str, Any]:
+    async def refresh(
+        self, archive_org_items: str | None = None, *, timeout: float = 60.0
+    ) -> dict[str, Any]:
         """POST /refresh — trigger file-provider rescan."""
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = {"timeout": timeout}
         if archive_org_items:
             kwargs["json"] = {"archive_org_items": archive_org_items}
         resp = await self._request("POST", "/refresh", **kwargs)

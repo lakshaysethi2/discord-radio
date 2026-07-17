@@ -24,6 +24,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      DATABASE_PATH: /data/tv.db
       FILE_PROVIDER_DB_PATH: /data/provider.db
       FILE_PROVIDER_CACHE_PATH: /cache
       LOCAL_MEDIA_PATH: /media
