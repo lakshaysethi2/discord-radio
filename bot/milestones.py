@@ -12,6 +12,8 @@ Split into two classes:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -103,6 +105,7 @@ class NowPlaying:
         self.text_channel_id = text_channel_id
         self.state = state
         self.db = db
+        self._update_task: asyncio.Task | None = None
 
     def _fmt_duration(self, seconds: int) -> str:
         if seconds <= 0:
@@ -120,6 +123,9 @@ class NowPlaying:
     async def post_or_replace(self, track) -> None:  # pragma: no cover — discord I/O
         """Delete previous embed (if any), post a fresh one, remember its id."""
         import discord
+
+        if self._update_task and not self._update_task.done():
+            self._update_task.cancel()
 
         channel = self.client.get_channel(self.text_channel_id)
         if channel is None:
@@ -150,3 +156,43 @@ class NowPlaying:
             log.exception("could not post Now Playing embed")
             return
         self.state.now_playing_message_id = int(msg.id)
+
+    async def update_watcher_count(self) -> None:
+        """Edit the current Now Playing message to update the currently watching count."""
+        prev_id = self.state.now_playing_message_id
+        if not prev_id:
+            return
+        channel = self.client.get_channel(self.text_channel_id)
+        if channel is None:
+            return
+        try:
+            msg = await channel.fetch_message(prev_id)
+            if msg and msg.embeds:
+                embed = msg.embeds[0]
+                for idx, field in enumerate(embed.fields):
+                    if field.name == "Currently watching":
+                        embed.set_field_at(
+                            idx,
+                            name="Currently watching",
+                            value=f"👥 {self._watcher_count()}",
+                            inline=field.inline,
+                        )
+                        await msg.edit(embed=embed)
+                        break
+        except Exception:
+            log.debug("could not update watcher count on message %s", prev_id)
+
+    def trigger_watcher_count_update(self) -> None:
+        """Schedule a debounced watcher count update to avoid rate limits."""
+        if self._update_task and not self._update_task.done():
+            return  # update already scheduled
+
+        async def _debounced():
+            await asyncio.sleep(2.0)  # wait 2 seconds for transitions to settle
+            await self.update_watcher_count()
+
+        loop = None
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+        if loop:
+            self._update_task = loop.create_task(_debounced())

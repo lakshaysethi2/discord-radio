@@ -285,6 +285,8 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 await player.resume()
                 if player.current_track is not None:
                     await now_playing.post_or_replace(player.current_track)
+            else:
+                now_playing.trigger_watcher_count_update()
         elif transition is Transition.LEFT:
             closed = tracker.close_session(user_id=event.user_id)
             if closed is not None:
@@ -294,6 +296,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             listeners = _non_bot_members(before.channel, exclude_user_id=event.user_id)
             if player is not None and should_pause(len(listeners), state.is_paused):
                 await player.pause()
+            now_playing.trigger_watcher_count_update()
 
     # Graceful shutdown: close scheduler + provider + DB.
     def _install_signal_handlers() -> None:

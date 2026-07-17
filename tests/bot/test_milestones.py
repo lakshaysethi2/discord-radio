@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from bot.milestones import MilestoneAnnouncer, MilestoneChecker
 from db.database import Database
@@ -137,3 +138,162 @@ class TestAnnouncer:
         await ann.check_and_announce("u1")
         await ann.check_and_announce("u1")  # second call should be silent
         assert len(channel.sent) == 1
+
+
+# ------------------------------------------------------------------ now playing
+class FakeEmbedField:
+    def __init__(self, name: str, value: str, inline: bool = True) -> None:
+        self.name = name
+        self.value = value
+        self.inline = inline
+
+
+class FakeEmbed:
+    def __init__(
+        self, title: str, description: str, fields: list[FakeEmbedField] | None = None
+    ) -> None:
+        self.title = title
+        self.description = description
+        self.fields = fields or []
+
+    def set_field_at(self, index: int, *, name: str, value: str, inline: bool = True) -> None:
+        self.fields[index] = FakeEmbedField(name, value, inline)
+
+
+class FakeMessage:
+    def __init__(self, id: int, embeds: list[FakeEmbed]) -> None:
+        self.id = id
+        self.embeds = embeds
+        self.edits: list[dict] = []
+        self.deleted = False
+
+    async def edit(self, embed: FakeEmbed) -> None:
+        self.edits.append({"embed": embed})
+
+    async def delete(self) -> None:
+        self.deleted = True
+
+
+class FakeDiscordChannel:
+    def __init__(self) -> None:
+        self.messages: dict[int, FakeMessage] = {}
+        self.sent_embeds: list = []
+
+    async def fetch_message(self, msg_id: int) -> FakeMessage | None:
+        return self.messages.get(msg_id)
+
+    async def send(self, embed: Any) -> FakeMessage:
+        self.sent_embeds.append(embed)
+        msg = FakeMessage(id=12345, embeds=[embed])
+        self.messages[12345] = msg
+        return msg
+
+
+class FakeState:
+    def __init__(self) -> None:
+        self.now_playing_message_id: int | None = None
+
+
+@dataclass
+class DummyTrack:
+    track_id: str = "t1"
+    title: str = "Test Title"
+    duration_seconds: int = 120
+    playlist_position: int = 0
+
+
+class TestNowPlaying:
+    def test_fmt_duration(self, db: Database) -> None:
+        from bot.milestones import NowPlaying
+
+        np = NowPlaying(client=None, text_channel_id=42, state=None, db=db)
+        assert np._fmt_duration(-1) == "—"
+        assert np._fmt_duration(0) == "—"
+        assert np._fmt_duration(45) == "0m 45s"
+        assert np._fmt_duration(125) == "2m 05s"
+        assert np._fmt_duration(3665) == "1h 01m"
+
+    def test_watcher_count(self, db: Database) -> None:
+        from bot.milestones import NowPlaying
+
+        np = NowPlaying(client=None, text_channel_id=42, state=None, db=db)
+        assert np._watcher_count() == 0
+
+        # Seed some active and inactive sessions
+        db.execute(
+            "INSERT INTO watch_sessions(user_id, username, joined_at) VALUES ('u1', 'user1', '2024-11-01 12:00:00')"
+        )
+        db.execute(
+            "INSERT INTO watch_sessions(user_id, username, joined_at, left_at) VALUES ('u2', 'user2', '2024-11-01 12:00:00', '2024-11-01 13:00:00')"
+        )
+        assert np._watcher_count() == 1
+
+    async def test_post_or_replace(self, db: Database) -> None:
+        from bot.milestones import NowPlaying
+
+        channel = FakeDiscordChannel()
+        client = FakeClient(channels={42: channel})
+        state = FakeState()
+        np = NowPlaying(client=client, text_channel_id=42, state=state, db=db)
+
+        # First post
+        track = DummyTrack()
+        await np.post_or_replace(track)
+        assert state.now_playing_message_id == 12345
+        assert len(channel.sent_embeds) == 1
+        assert channel.sent_embeds[0].title == "🎙️ Now Playing"
+
+        # Second post should delete the previous
+        msg = channel.messages[12345]
+        assert not msg.deleted
+        await np.post_or_replace(track)
+        assert msg.deleted
+
+    async def test_update_watcher_count(self, db: Database) -> None:
+        from bot.milestones import NowPlaying
+
+        channel = FakeDiscordChannel()
+        client = FakeClient(channels={42: channel})
+        state = FakeState()
+        np = NowPlaying(client=client, text_channel_id=42, state=state, db=db)
+
+        track = DummyTrack()
+        await np.post_or_replace(track)
+
+        # Update watcher count field
+        db.execute(
+            "INSERT INTO watch_sessions(user_id, username, joined_at) VALUES ('u1', 'user1', '2024-11-01 12:00:00')"
+        )
+        await np.update_watcher_count()
+
+        msg = channel.messages[12345]
+        assert len(msg.edits) == 1
+        edited_embed = msg.edits[0]["embed"]
+        # Find the watcher count field
+        watcher_field = next(f for f in edited_embed.fields if f.name == "Currently watching")
+        assert watcher_field.value == "👥 1"
+
+    async def test_trigger_watcher_count_update_debounce(self, db: Database) -> None:
+        from bot.milestones import NowPlaying
+
+        channel = FakeDiscordChannel()
+        client = FakeClient(channels={42: channel})
+        state = FakeState()
+        np = NowPlaying(client=client, text_channel_id=42, state=state, db=db)
+
+        track = DummyTrack()
+        await np.post_or_replace(track)
+
+        # Trigger twice quickly
+        np.trigger_watcher_count_update()
+        t1 = np._update_task
+        assert t1 is not None
+
+        np.trigger_watcher_count_update()
+        t2 = np._update_task
+        assert t1 is t2  # Shared the same task due to debounce
+
+        # Wait for task to finish
+        await t1
+        msg = channel.messages[12345]
+        assert len(msg.edits) == 1
