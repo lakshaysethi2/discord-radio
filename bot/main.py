@@ -479,6 +479,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             log.info("closed %d orphan sessions on startup", closed)
 
         # 4. Build a Station for every enabled guild with valid channels.
+        voice_connect_failures = 0
         for cfg in guilds_db.get_enabled_guild_configs(db):
             guild = client.get_guild(int(cfg.guild_id))
             if guild is None:
@@ -494,10 +495,33 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 continue
             tc_id = int(cfg.text_channel_id) if cfg.text_channel_id else None
 
-            try:
-                voice_client = await vc.connect(reconnect=True)
-            except Exception as exc:  # pragma: no cover — permission edge case
-                log.warning("guild %s: could not connect to voice: %s", cfg.guild_id, exc)
+            # discord.py only auto-retries the voice handshake on websocket
+            # close. A UDP-discovery timeout (firewall/NAT blocking Discord
+            # voice egress, or the bot role lacking Connect/Speak) is reported
+            # once and fails, so retry a few times to ride out transient
+            # startup blips. Each attempt is bounded so a hard block can't hang
+            # startup forever.
+            voice_client = None
+            for attempt in range(1, 4):
+                try:
+                    voice_client = await vc.connect(reconnect=True, timeout=30.0)
+                    break
+                except Exception as exc:  # pragma: no cover — network/permission edge case
+                    log.warning(
+                        "guild %s: voice connect attempt %d/3 failed: %s",
+                        cfg.guild_id,
+                        attempt,
+                        exc,
+                    )
+            if voice_client is None:
+                voice_connect_failures += 1
+                log.warning(
+                    "guild %s: giving up on voice connection — bot will not serve "
+                    "this server this run. Confirm the bot role has Connect + Speak "
+                    "in the voice channel and that this host can reach Discord's "
+                    "voice servers over UDP, then restart the bot.",
+                    cfg.guild_id,
+                )
                 continue
 
             player = Player(
@@ -552,10 +576,19 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 log.info("guild %s voice channel empty on startup — staying silent", cfg.guild_id)
 
         if not stations:
-            log.warning(
-                "no enabled servers with valid channels — bot is idle. "
-                "Enable a server + pick channels in the dashboard."
-            )
+            if voice_connect_failures:
+                log.warning(
+                    "bot is idle: %d enabled server(s) were found and valid but the "
+                    "voice connection failed (see warnings above). Confirm the bot "
+                    "role has Connect + Speak in the voice channel and that this host "
+                    "can reach Discord's voice servers over UDP, then restart.",
+                    voice_connect_failures,
+                )
+            else:
+                log.warning(
+                    "no enabled servers with valid channels — bot is idle. "
+                    "Enable a server + pick channels in the dashboard."
+                )
 
         # Initialise the shared-radio clock from the persisted cursor.
         total = sum(s.listener_count for s in stations.values())
