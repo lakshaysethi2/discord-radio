@@ -4,6 +4,7 @@
 # Run `make help` for the full list.
 
 .PHONY: help \
+        dirs \
         build rebuild pull \
         up up-build down restart \
         up-bot up-dashboard up-provider \
@@ -26,9 +27,12 @@ TEST_GID := $(shell id -g 2>/dev/null || echo 1000)
 export TEST_UID
 export TEST_GID
 
+dirs:  ## Ensure data, cache, and media directories exist
+	@mkdir -p data cache media
+
 # Make sure `.env` exists — docker-compose refuses to load `env_file: .env`
 # if the file is missing. First run copies `.env.example` as a placeholder.
-env:  ## Create `.env` from `.env.example` if missing
+env: dirs  ## Create `.env` from `.env.example` if missing
 	@if [ ! -f .env ]; then \
 	  echo "creating .env from .env.example (fill in real values before starting the bot)"; \
 	  cp .env.example .env; \

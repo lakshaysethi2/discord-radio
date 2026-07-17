@@ -4,9 +4,12 @@
 !.env.example
 
 # --- Data & cache (mounted volumes) ---
-data/
-cache/
-media/
+data/*
+!data/.gitkeep
+cache/*
+!cache/.gitkeep
+media/*
+!media/.gitkeep
 
 # --- Telethon session files ---
 *.session

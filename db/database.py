@@ -45,17 +45,30 @@ class Database:
     def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
         self.path = str(path) if path is not None else get_default_path()
         if self.path != ":memory:":
-            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        # `check_same_thread=False` because our dashboard is async and
-        # sometimes touches the DB from a worker thread. The lock below
-        # serializes writes; SQLite handles reads concurrently under WAL.
-        self._conn = sqlite3.connect(
-            self.path,
-            detect_types=sqlite3.PARSE_DECLTYPES,
-            isolation_level=None,  # autocommit; we manage txns explicitly
-            check_same_thread=False,
-            timeout=30.0,
-        )
+            parent_dir = Path(self.path).parent
+            parent_dir.mkdir(parents=True, exist_ok=True)
+            if not os.access(parent_dir, os.W_OK):
+                raise PermissionError(
+                    f"Database directory '{parent_dir}' is not writable by user (uid={os.getuid()}). "
+                    "Ensure the host volume directory exists and has write permissions."
+                )
+        try:
+            self._conn = sqlite3.connect(
+                self.path,
+                detect_types=sqlite3.PARSE_DECLTYPES,
+                isolation_level=None,  # autocommit; we manage txns explicitly
+                check_same_thread=False,
+                timeout=30.0,
+            )
+        except sqlite3.OperationalError as exc:
+            if self.path != ":memory:":
+                parent_dir = Path(self.path).parent
+                if not os.access(parent_dir, os.W_OK):
+                    raise sqlite3.OperationalError(
+                        f"unable to open database file at '{self.path}': directory '{parent_dir}' "
+                        f"is not writable by user (uid={os.getuid()})"
+                    ) from exc
+            raise
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         try:

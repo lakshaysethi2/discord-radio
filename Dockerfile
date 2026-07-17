@@ -12,7 +12,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # ffmpeg + libopus for voice; ca-certs for HTTPS; tini for clean signal
-# handling; sqlite3 CLI for `make db-shell`; make + bash for in-container Make.
+# handling; sqlite3 CLI for `make db-shell`; make + bash for in-container Make; gosu for privileges stepdown.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg \
       libopus0 \
@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
       sqlite3 \
       bash \
+      gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user for defense in depth.
@@ -35,25 +36,26 @@ COPY file_provider/requirements.txt ./file_provider/requirements.txt
 RUN pip install -r requirements.txt && \
     pip install -r file_provider/requirements.txt
 
-# App code.
+# App code & entrypoint.
 COPY bot ./bot
 COPY dashboard ./dashboard
 COPY db ./db
 COPY provider ./provider
 COPY file_provider ./file_provider
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 # Data & cache mount points.
 RUN mkdir -p /data /cache && chown -R tvbot:tvbot /app /data /cache
 
-USER tvbot
-
 ENV DATABASE_PATH=/data/tv.db \
     CACHE_PATH=/cache \
-    DASHBOARD_PORT=8000
+    DASHBOARD_PORT=8000 \
+    APP_USER=tvbot
 
 VOLUME ["/data", "/cache"]
 
 EXPOSE 8000
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/docker-entrypoint.sh"]
 CMD ["python", "-m", "bot.main"]

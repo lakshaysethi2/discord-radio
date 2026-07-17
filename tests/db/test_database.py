@@ -132,6 +132,17 @@ class TestConnectShim:
         finally:
             db.close()
 
+    def test_unwritable_directory_raises(self, tmp_path: Path) -> None:
+        ro_dir = tmp_path / "ro"
+        ro_dir.mkdir()
+        ro_dir.chmod(0o555)
+        try:
+            with pytest.raises((PermissionError, sqlite3.OperationalError)) as exc_info:
+                Database(ro_dir / "fail.db")
+            assert "not writable" in str(exc_info.value)
+        finally:
+            ro_dir.chmod(0o755)
+
 
 class TestUniqueConstraint:
     """The blueprint calls out `playlist_position INTEGER UNIQUE` — verify."""
