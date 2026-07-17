@@ -65,12 +65,16 @@ jobs:
           if-no-files-found: warn
 
   docker:
-    name: docker build sanity
+    name: docker build + containerised test suite
     runs-on: ubuntu-latest
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - name: Build bot image
-        run: docker build -f Dockerfile -t discord-radio/bot:ci .
-      - name: Build provider image
-        run: docker build -f file_provider/Dockerfile -t discord-radio/file-provider:ci .
+      - name: Create .env from example so compose can load it
+        run: cp .env.example .env
+      - name: Build images (all services)
+        run: make build
+      - name: Run pytest inside the test container
+        run: make test
+      - name: Run ruff inside the test container
+        run: make lint

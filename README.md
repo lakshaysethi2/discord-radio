@@ -48,38 +48,46 @@ Three independently-restartable services:
 
 ---
 
-## Quick start (Docker via Make)
+## Quick start
+
+**Requirements:** Docker + `make`. Nothing else runs on the host.
 
 ```bash
 git clone https://github.com/YOUR-ORG/discord-radio
 cd discord-radio
-cp .env.example .env
-# fill in DISCORD_BOT_TOKEN, DISCORD_GUILD_ID, DISCORD_VOICE_CHANNEL_ID,
-# DISCORD_TEXT_CHANNEL_ID, and pick a provider backend.
-make up          # bring everything up (file-provider, bot, dashboard)
-make logs        # tail all services
-make health      # container status
+make env             # creates .env from .env.example
+$EDITOR .env         # fill in Discord token, guild id, channel ids, admin ids
+make up              # brings up file-provider → bot → dashboard
+make logs            # tail everything
+make health          # container status
 ```
 
 The dashboard is served on `http://localhost:8000`. Put Cloudflare / nginx /
 Caddy in front for HTTPS.
 
-Everyday ops all go through the Makefile:
+### Everyday ops
+
+Every command runs inside a container — the host only needs Docker + make.
 
 | Command                     | What it does                                        |
 | --------------------------- | --------------------------------------------------- |
-| `make up`                   | `docker compose up -d`                              |
+| `make up`                   | Start file-provider, bot, dashboard                 |
 | `make up-build`             | Rebuild images then start                           |
 | `make down`                 | Stop everything (keeps volumes)                     |
 | `make restart`              | Restart all containers                              |
 | `make rebuild`              | Full no-cache rebuild                               |
 | `make logs` / `logs-bot`    | Tail logs (all / just bot)                          |
-| `make ps`                   | Container status                                    |
-| `make shell-bot`            | Shell into the bot container                        |
+| `make ps` / `health`        | Container status                                    |
+| `make test`                 | Run pytest inside a container                       |
+| `make test-cov`             | Run pytest with coverage report                     |
+| `make lint`                 | Ruff check + format-check                           |
+| `make format`               | Ruff format + autofix                               |
+| `make dev`                  | Interactive bash inside a dev container             |
+| `make shell-bot`            | Shell into the running bot container                |
 | `make db-shell`             | `sqlite3 /data/tv.db` inside the bot container      |
 | `make refresh-playlist`     | Tell the file-provider to rescan                    |
 | `make telegram-login`       | First-run interactive Telethon auth                 |
-| `make backup`               | tar.gz of `data/` and `cache/` in `backups/`        |
+| `make backup`               | tar.gz of `data/` + `cache/` in `backups/`          |
 
 Run `make help` to see everything.
 
@@ -90,22 +98,21 @@ For the OAuth2 admin dashboard, see [`docs/dashboard-setup.md`](docs/dashboard-s
 
 ## Local development
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt -r file_provider/requirements.txt
-
-# In three terminals:
-make run-provider   # file provider on :8001
-make run-bot        # bot connects to Discord
-make run-dashboard  # dashboard on :8000
-```
-
-Run tests + lint:
+Same commands as production — everything runs in containers.
 
 ```bash
-make test
-make lint
+make dev             # drop into an interactive bash inside a dev container
+                     # ... /app is the mounted source tree
+                     # ... run python, pytest, ruff, sqlite3 as needed
+
+# Or just:
+make test            # pytest inside a container
+make lint            # ruff check + format-check
+make format          # ruff format + autofix
 ```
+
+Source edits on the host are visible instantly inside the container (bind
+mount). No host virtualenv or Python install needed.
 
 ---
 

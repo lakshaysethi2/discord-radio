@@ -60,16 +60,16 @@ Last updated: **iteration 20** — all 12 blueprint phases complete + four hosti
 - Prometheus metrics
 - Rate-limit on milestone announcements (rare edge case)
 
-## Deploy path
-1. `cp .env.example .env` — fill Discord token/guild/channels, admin ids, OAuth2, provider order.
-2. `docker compose up -d` — brings up file-provider → bot → dashboard (with proper healthcheck ordering).
-3. For Telegram backend: first-run interactive Telethon auth via `docker compose run --rm file-provider ...` (see `docs/telegram-setup.md`).
-4. Put Cloudflare / nginx in front of dashboard on :8000 (HTTPS terminator; `--proxy-headers` already set).
+## Deploy path (host needs only Docker + make)
+1. `make env` — creates `.env` from `.env.example`.
+2. Edit `.env` — Discord token/guild/channels, admin ids, OAuth2, provider order.
+3. `make up` — brings up file-provider → bot → dashboard (with proper healthcheck ordering).
+4. For Telegram backend: `make telegram-login` for first-run interactive Telethon auth (see `docs/telegram-setup.md`).
+5. Put Cloudflare / nginx in front of dashboard on :8000 (HTTPS terminator; `--proxy-headers` already set).
 
 ## How to resume in a fresh session
-1. `git status` — should be clean on `arena/019f6df3-discord-radio`
-2. `python -m venv .venv && source .venv/bin/activate`
-3. `pip install -r requirements.txt -r file_provider/requirements.txt`
-4. `make test` → 263 passing, ~5 seconds
-5. `make lint` → clean
-6. Check `PLAN.md` for outstanding items (all core work done; only nice-to-haves remain)
+1. `git status` — should be clean on `arena/019f6df3-discord-radio`.
+2. `make build` — builds all Docker images.
+3. `make test` — runs the 263 tests inside a container.
+4. `make lint` — ruff check + format check inside a container.
+5. Check `PLAN.md` for outstanding items (all core work done; only nice-to-haves remain).

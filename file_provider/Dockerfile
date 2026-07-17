@@ -7,10 +7,11 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# ffmpeg is optional here (we don't transcode), but ca-certs + tini are needed.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       tini \
       ca-certificates \
+      sqlite3 \
+      bash \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --shell /bin/bash --uid 1000 provider

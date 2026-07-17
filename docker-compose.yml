@@ -1,8 +1,17 @@
 # Discord TV Bot — docker-compose.
 #
-# Three services share `./data` (SQLite dbs) and `./cache` (audio files).
-# Ports: only the dashboard is exposed externally (Cloudflare / your reverse
-# proxy sits in front). The file-provider stays on the internal Docker network.
+# All operations go through Make targets that wrap `docker compose`.
+# Nothing needs to run on the host except Docker itself.
+#
+# Services:
+#   file-provider  ─ FastAPI + Telethon/Local backends
+#   bot            ─ Discord bot (long-running)
+#   dashboard      ─ FastAPI admin UI
+#   test           ─ one-shot: pytest against the mounted source tree
+#   dev            ─ interactive shell (`make dev`) — for ad-hoc python/sqlite
+#
+# `data/` and `cache/` are bind-mounted so the same SQLite files are shared
+# between bot + dashboard + file-provider.
 
 services:
 
@@ -50,8 +59,6 @@ services:
       file-provider:
         condition: service_healthy
     healthcheck:
-      # Bot has no HTTP surface — check that the process is alive and its
-      # SQLite is writable.
       test: ["CMD", "python", "-c", "import sqlite3; sqlite3.connect('/data/tv.db').execute('SELECT 1')"]
       interval: 60s
       timeout: 5s
@@ -86,3 +93,47 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
+
+  # --------------------------------------------------------------- one-shot
+  # `make test`, `make lint`, `make format` all run inside this container.
+  # The source tree is mounted read-write (so `format` can rewrite files) and
+  # a scratch tmpfs is provided for pytest artifacts.
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: discord-radio/bot:latest
+    profiles: ["dev"]  # don't start with `docker compose up`
+    volumes:
+      - .:/app
+    working_dir: /app
+    # Override user so mounted-file writes have the right ownership on Linux.
+    # `${TEST_UID}:${TEST_GID}` is set by the Makefile from the host — falls
+    # back to 1000:1000 (matches the `tvbot` user baked into the image).
+    user: "${TEST_UID:-1000}:${TEST_GID:-1000}"
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: /app
+      HOME: /tmp  # numeric uid without a homedir → point HOME somewhere writable
+    entrypoint: ["/usr/bin/tini", "--"]
+    command: ["python", "-m", "pytest", "-q"]
+
+  # Interactive dev shell — `make dev`.
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: discord-radio/bot:latest
+    profiles: ["dev"]
+    volumes:
+      - .:/app
+      - ./data:/data
+      - ./cache:/cache
+    working_dir: /app
+    user: "${TEST_UID:-1000}:${TEST_GID:-1000}"
+    environment:
+      PYTHONPATH: /app
+      HOME: /tmp
+    entrypoint: ["/bin/bash"]
+    stdin_open: true
+    tty: true
