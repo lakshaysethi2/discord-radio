@@ -307,6 +307,10 @@ def _providers_from_config(config: Config) -> list[BaseProvider]:
     for name in config.provider_order:
         if name == "local":
             out.append(LocalProvider(config.local_media_path))
+        elif name == "archive":
+            from file_provider.providers.archive import ArchiveOrgProvider
+
+            out.append(ArchiveOrgProvider(item_ids=config.archive_org_items))
         elif name == "telegram":
             from file_provider.providers.telegram import TelegramProvider
 

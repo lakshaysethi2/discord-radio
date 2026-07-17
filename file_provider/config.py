@@ -45,6 +45,12 @@ class Config:
         default_factory=lambda: os.environ.get("LOCAL_MEDIA_PATH", "./media")
     )
 
+    # ---- archive.org ----
+    # Comma-separated Internet Archive item ids (e.g.
+    # "Hawkins_Lectures_transcoded_actual_files"). Each item's original-source
+    # audio files become playlist entries. Public API, no auth needed.
+    archive_org_items: list[str] = field(default_factory=lambda: _env_list("ARCHIVE_ORG_ITEMS", ""))
+
     # ---- Telegram ----
     telegram_api_id: str = field(default_factory=lambda: os.environ.get("TELEGRAM_API_ID", ""))
     telegram_api_hash: str = field(default_factory=lambda: os.environ.get("TELEGRAM_API_HASH", ""))

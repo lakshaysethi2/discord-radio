@@ -91,8 +91,11 @@ Every command runs inside a container — the host only needs Docker + make.
 
 Run `make help` to see everything.
 
-For the Telegram (MTProto) backend, see [`docs/telegram-setup.md`](docs/telegram-setup.md).
-For the OAuth2 admin dashboard, see [`docs/dashboard-setup.md`](docs/dashboard-setup.md).
+Backend setup guides:
+
+- **archive.org (public HTTP, no auth)** — [`docs/archive-org-setup.md`](docs/archive-org-setup.md)
+- **Telegram (MTProto via Telethon)** — [`docs/telegram-setup.md`](docs/telegram-setup.md)
+- **Admin OAuth2 dashboard** — [`docs/dashboard-setup.md`](docs/dashboard-setup.md)
 
 ---
 
@@ -128,7 +131,8 @@ The most important ones:
 | `DISCORD_VOICE_CHANNEL_ID`   | Voice channel the bot joins                                  |
 | `DISCORD_TEXT_CHANNEL_ID`    | Channel for Now Playing + milestone announcements            |
 | `ADMIN_USER_IDS`             | Comma-separated Discord user ids allowed into the dashboard  |
-| `FILE_PROVIDER_ORDER`        | Comma-separated backend order: `local`, `telegram`           |
+| `FILE_PROVIDER_ORDER`        | Comma-separated backend order: `local`, `archive`, `telegram` |
+| `ARCHIVE_ORG_ITEMS`          | Comma-separated Internet Archive item ids (public, no auth)  |
 | `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` / `TELEGRAM_CHANNEL_ID` | Telegram MTProto backend |
 | `LOCAL_MEDIA_PATH`           | Directory scanned by the local provider                      |
 | `DASHBOARD_SECRET_KEY`       | Signing key for session cookies (`openssl rand -hex 32`)     |
