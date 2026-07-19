@@ -27,6 +27,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from bot.commands import build_commands
 from bot.config import BotConfig, load
 from bot.milestones import MilestoneAnnouncer, NowPlaying
 from bot.player import Player
@@ -345,6 +346,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
     but they all share one global playback cursor — the same radio, everywhere.
     """
     import discord
+    from discord import app_commands
 
     config = config or load()
     _init_logging()
@@ -362,6 +364,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
     intents.message_content = False  # we don't read messages
 
     client = discord.Client(intents=intents)
+    tree = app_commands.CommandTree(client)
 
     tracker = SessionTracker(db=db, min_session_seconds=config.min_session_seconds)
 
@@ -377,6 +380,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
     radio = RadioClock()
     ready_done = False  # guard against on_ready firing more than once
     admin_paused = False  # manual dashboard pause; independent of listeners
+    slash_commands_registered = False  # guard against double-registration on reconnect
 
     async def _handle_command(command: str, payload: dict | None) -> str:
         """Called by the scheduler's command loop for each pending row.
@@ -729,6 +733,20 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
         state.is_paused = total == 0
         radio.init_from_state(float(state.playback_position_seconds), playing=not state.is_paused)
         scheduler.start()
+
+        # Register slash commands once, then sync globally.
+        nonlocal slash_commands_registered
+        if not slash_commands_registered:
+            slash_commands_registered = True
+            for name, desc, cb in build_commands(
+                db=db, provider=provider, state=state, radio=radio, stations=stations
+            ):
+                tree.command(name=name, description=desc)(cb)
+            try:
+                synced = await tree.sync()
+                log.info("synced %d slash commands globally", len(synced))
+            except Exception:
+                log.exception("failed to sync slash commands")
 
     @client.event
     async def on_voice_state_update(member, before, after):
