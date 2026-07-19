@@ -192,3 +192,4 @@ read it once on `on_ready`, so a change needed a full restart. That's gone:
 
 Verification: `.venv/bin/python -m pytest -q` → **371 passed**;
 `ruff check .` clean; `ruff format --check .` clean.
+[2026-07-19T13:04:14Z] STATUS: torrent-only mode configured and tested. Report written to /home/ls/code/firstmate/data/dr-tor-1784466018/report.md

@@ -295,6 +295,7 @@ class TorrentManager:
                 "--bt-stop-timeout=60",
                 "--max-concurrent-downloads=3",
                 "--auto-file-renaming=false",
+                "--allow-overwrite=true",
                 "--summary-interval=0",
             ]
             # The RPC URL's client is configured with the same secret. Do not
