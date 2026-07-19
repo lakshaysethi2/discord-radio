@@ -27,6 +27,7 @@ services:
       DATABASE_PATH: /data/tv.db
       FILE_PROVIDER_DB_PATH: /data/provider.db
       FILE_PROVIDER_CACHE_PATH: /cache
+      FILE_PROVIDER_TORRENT_DATA_PATH: /data/torrents
       LOCAL_MEDIA_PATH: /media
       FILE_PROVIDER_HOST: 0.0.0.0
       FILE_PROVIDER_PORT: 8001

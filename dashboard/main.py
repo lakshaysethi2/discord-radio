@@ -28,13 +28,14 @@ from __future__ import annotations
 import contextlib
 import hmac
 import logging
+import os
 import secrets
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
+from fastapi import Depends, File, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
@@ -49,6 +50,12 @@ log = logging.getLogger(__name__)
 
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
+try:
+    _TORRENT_UPLOAD_LIMIT_BYTES = max(
+        1, int(os.environ.get("FILE_PROVIDER_TORRENT_MAX_UPLOAD_MB", "16"))
+    ) * 1024**2
+except ValueError:
+    _TORRENT_UPLOAD_LIMIT_BYTES = 16 * 1024**2
 
 
 def _build_templates() -> Jinja2Templates:
@@ -432,20 +439,34 @@ def create_app(
         request: Request,
         user: auth.SessionUser = Depends(_require_admin),
         page: int = Query(1, ge=1, le=10_000),
-        page_size: int = Query(50, ge=10, le=500),
+        page_size: int = Query(200, ge=10, le=500),
         q: str | None = Query(None),
+        provider_filter: str = Query("all", alias="provider"),
+        media_type: str = Query("all", alias="type"),
+        cached: str = Query("all"),
     ) -> HTMLResponse:
-        """Paginated playlist with search and a direct play-now control."""
+        """Paginated playlist with search, filters, and direct play-now control."""
         tracks: list = []
         total = 0
         error: str | None = None
         current_track_id: str | None = None
         current_page: int | None = None
         search = (q or "").strip() or None
+        provider_filter = provider_filter.strip() or "all"
+        media_type = media_type.strip().lower() or "all"
+        cached = cached.strip().lower() or "all"
+        provider_query = None if provider_filter == "all" else provider_filter
+        type_query = None if media_type == "all" else media_type
+        ready_query = None if cached == "all" else cached == "ready"
         try:
             fp = await _get_provider()
             tracks, total = await fp.list_tracks(
-                offset=(page - 1) * page_size, limit=page_size, search=search
+                offset=(page - 1) * page_size,
+                limit=page_size,
+                search=search,
+                provider=provider_query,
+                media_type=type_query,
+                ready=ready_query,
             )
         except Exception as exc:
             error = f"could not reach file provider: {exc}"
@@ -476,6 +497,9 @@ def create_app(
                 "page_size": page_size,
                 "total_pages": max(1, (total + page_size - 1) // page_size),
                 "q": q or "",
+                "provider_filter": provider_filter,
+                "media_type": media_type,
+                "cached": cached,
                 "current_track_id": current_track_id,
                 "current_page": current_page,
                 "error": error,
@@ -492,6 +516,10 @@ def create_app(
         csrf: str = Form(""),
         page: int = Form(1),
         q: str = Form(""),
+        page_size: int = Form(200),
+        provider: str = Form("all"),
+        media_type: str = Form("all"),
+        cached: str = Form("all"),
         user: auth.SessionUser = Depends(_require_admin),
     ) -> Response:
         sess = _get_session(request) or {}
@@ -505,7 +533,15 @@ def create_app(
         )
         from urllib.parse import urlencode
 
-        params = {"page": page, "q": q, "flash": "Playing selected track"}
+        params = {
+            "page": page,
+            "page_size": page_size,
+            "q": q,
+            "provider": provider,
+            "type": media_type,
+            "cached": cached,
+            "flash": "Playing selected track",
+        }
         return RedirectResponse(
             "/queue?" + urlencode({k: v for k, v in params.items() if v}), status_code=303
         )
@@ -572,6 +608,115 @@ def create_app(
         except commands.UnknownCommandError:
             raise HTTPException(status_code=400, detail=f"unknown action {action!r}") from None
         return RedirectResponse(f"/dashboard?flash=Queued+{action}", status_code=303)
+
+    # ---- Torrent management ---------------------------------------------
+    def _torrent_redirect(message: str) -> RedirectResponse:
+        from urllib.parse import quote
+
+        return RedirectResponse("/torrents?flash=" + quote(message), status_code=303)
+
+    @app.get("/torrents", response_class=HTMLResponse)
+    async def torrents_page(
+        request: Request,
+        user: auth.SessionUser = Depends(_require_admin),
+    ) -> HTMLResponse:
+        torrents: list[dict[str, Any]] = []
+        error: str | None = None
+        try:
+            torrents = await (await _get_provider()).list_torrents()
+        except Exception as exc:
+            error = f"could not reach torrent client: {exc}"
+            log.warning("torrent list failed: %s", exc)
+        sess = _get_session(request) or {}
+        return _render(
+            request,
+            "torrents.html",
+            {
+                "user": user,
+                "torrents": torrents,
+                "error": error,
+                "csrf": sess.get("csrf", ""),
+                "command_flash": request.query_params.get("flash"),
+            },
+        )
+
+    @app.post("/torrents/add")
+    async def add_torrent(
+        request: Request,
+        magnet: str = Form(""),
+        torrent_file: UploadFile | None = File(None),
+        csrf: str = Form(""),
+        user: auth.SessionUser = Depends(_require_admin),
+    ) -> Response:
+        sess = _get_session(request) or {}
+        if not sess.get("csrf") or not hmac.compare_digest(sess["csrf"], csrf):
+            raise HTTPException(status_code=403, detail="invalid CSRF token")
+        magnet = magnet.strip()
+        try:
+            provider = await _get_provider()
+            if magnet:
+                await provider.add_magnet(magnet)
+            elif torrent_file is not None and torrent_file.filename:
+                content = await torrent_file.read(_TORRENT_UPLOAD_LIMIT_BYTES + 1)
+                if len(content) > _TORRENT_UPLOAD_LIMIT_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            ".torrent file is larger than "
+                            f"{_TORRENT_UPLOAD_LIMIT_BYTES // 1024**2} MiB"
+                        ),
+                    )
+                await provider.add_torrent_file(content, torrent_file.filename)
+            else:
+                return _torrent_redirect("Enter a magnet link or choose a .torrent file")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            log.warning("adding torrent failed: %s", exc)
+            return _torrent_redirect(f"Could not add torrent: {exc}")
+        return _torrent_redirect("Torrent added")
+
+    @app.post("/torrents/{torrent_id}/files/{file_index}")
+    async def set_torrent_file(
+        request: Request,
+        torrent_id: str,
+        file_index: int,
+        enabled: int = Form(...),
+        force: int = Form(0),
+        csrf: str = Form(""),
+        user: auth.SessionUser = Depends(_require_admin),
+    ) -> Response:
+        sess = _get_session(request) or {}
+        if not sess.get("csrf") or not hmac.compare_digest(sess["csrf"], csrf):
+            raise HTTPException(status_code=403, detail="invalid CSRF token")
+        try:
+            await (await _get_provider()).set_torrent_file_enabled(
+                torrent_id, file_index, bool(enabled), force=bool(force)
+            )
+        except Exception as exc:
+            log.warning("updating torrent file failed: %s", exc)
+            return _torrent_redirect(f"Could not update file: {exc}")
+        return _torrent_redirect("Playlist selection updated")
+
+    @app.post("/torrents/{torrent_id}/action")
+    async def torrent_action(
+        request: Request,
+        torrent_id: str,
+        action: str = Form(...),
+        csrf: str = Form(""),
+        user: auth.SessionUser = Depends(_require_admin),
+    ) -> Response:
+        sess = _get_session(request) or {}
+        if not sess.get("csrf") or not hmac.compare_digest(sess["csrf"], csrf):
+            raise HTTPException(status_code=403, detail="invalid CSRF token")
+        if action not in {"pause", "resume", "remove"}:
+            raise HTTPException(status_code=400, detail="unknown torrent action")
+        try:
+            await (await _get_provider()).torrent_action(torrent_id, action)
+        except Exception as exc:
+            log.warning("torrent action failed: %s", exc)
+            return _torrent_redirect(f"Torrent action failed: {exc}")
+        return _torrent_redirect("Torrent removed" if action == "remove" else f"Torrent {action}d")
 
     return app
 

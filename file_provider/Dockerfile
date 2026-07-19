@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       tini \
       ca-certificates \
       sqlite3 \
+      aria2 \
       bash \
       gosu \
     && rm -rf /var/lib/apt/lists/*

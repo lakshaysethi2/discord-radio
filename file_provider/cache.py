@@ -16,16 +16,30 @@ import os
 from pathlib import Path
 
 from file_provider.db import ProviderDB
+from file_provider.providers.base import ProviderFetchError
+from file_provider.storage import StorageQuota
 
 log = logging.getLogger(__name__)
 
 
+class StorageQuotaExceeded(ProviderFetchError):
+    """The provider-managed disk budget cannot fit another media file."""
+
+
 class Cache:
-    def __init__(self, root: Path, db: ProviderDB, max_bytes: int) -> None:
+    def __init__(
+        self,
+        root: Path,
+        db: ProviderDB,
+        max_bytes: int,
+        *,
+        quota: StorageQuota | None = None,
+    ) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.db = db
         self.max_bytes = max_bytes
+        self.quota = quota
 
     # ------------------------------------------------------------- lookup
     def path_for(self, track_id: str, ext: str = ".audio") -> Path:
@@ -59,12 +73,18 @@ class Cache:
         """
         protect = protect or set()
         current = self.db.cache_total_bytes()
-        if current + needed_bytes <= self.max_bytes:
+        if self.quota is not None:
+            if self.quota.allows(needed_bytes):
+                return 0
+        elif current + needed_bytes <= self.max_bytes:
             return 0
 
         freed = 0
         for row in self.db.cache_lru():
-            if current + needed_bytes - freed <= self.max_bytes:
+            if self.quota is not None:
+                if self.quota.allows(needed_bytes):
+                    break
+            elif current + needed_bytes - freed <= self.max_bytes:
                 break
             if row["track_id"] in protect:
                 continue
@@ -79,6 +99,11 @@ class Cache:
             self.db.forget_cache(row["track_id"])
             freed += size
             log.info("evicted %s (%d bytes)", row["track_id"], size)
+        if self.quota is not None and not self.quota.allows(needed_bytes):
+            raise StorageQuotaExceeded(
+                "provider storage quota exceeded; remove torrent data or increase "
+                "FILE_PROVIDER_CACHE_MAX_GB"
+            )
         return freed
 
     def prune_orphans(self) -> int:
@@ -95,7 +120,13 @@ class Cache:
         return self.db.cache_total_bytes()
 
     def free_bytes(self) -> int:
+        if self.quota is not None:
+            return self.quota.free_bytes()
         return max(0, self.max_bytes - self.total_bytes())
+
+    def storage_total_bytes(self) -> int:
+        """Actual provider-managed disk usage, counting hardlinks once."""
+        return self.quota.usage_bytes() if self.quota is not None else self.total_bytes()
 
     def rebuild_from_disk(self) -> int:
         """Rescan the cache dir and re-register orphan files.

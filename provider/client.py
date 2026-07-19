@@ -196,17 +196,92 @@ class FileProviderClient:
         except ValueError as exc:
             raise ProviderError("non-JSON /health response") from exc
 
+    # ------------------------------------------------------------- torrents
+    async def list_torrents(self) -> list[dict[str, Any]]:
+        """Return torrent rows, including their managed files."""
+        resp = await self._request("GET", "/torrents")
+        if resp.status_code != 200:
+            raise ProviderError(f"GET /torrents -> HTTP {resp.status_code}: {resp.text[:500]}")
+        try:
+            data = resp.json()
+            if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+                raise TypeError("missing items")
+            return [item for item in data["items"] if isinstance(item, dict)]
+        except (TypeError, ValueError) as exc:
+            raise ProviderError("malformed /torrents response") from exc
+
+    async def add_magnet(self, magnet: str) -> dict[str, Any]:
+        resp = await self._request("POST", "/torrents/magnet", json={"magnet": magnet})
+        if resp.status_code != 200:
+            raise ProviderError(f"POST /torrents/magnet -> HTTP {resp.status_code}: {resp.text[:500]}")
+        return self._torrent_from_response(resp, "/torrents/magnet")
+
+    async def add_torrent_file(self, content: bytes, filename: str) -> dict[str, Any]:
+        resp = await self._request(
+            "POST",
+            "/torrents/file",
+            files={"file": (filename, content, "application/x-bittorrent")},
+        )
+        if resp.status_code != 200:
+            raise ProviderError(f"POST /torrents/file -> HTTP {resp.status_code}: {resp.text[:500]}")
+        return self._torrent_from_response(resp, "/torrents/file")
+
+    async def set_torrent_file_enabled(
+        self, torrent_id: str, file_index: int, enabled: bool, *, force: bool = False
+    ) -> dict[str, Any]:
+        path = f"/torrents/{torrent_id}/files/{int(file_index)}"
+        resp = await self._request(
+            "POST", path, json={"enabled": enabled, "force": force}
+        )
+        if resp.status_code != 200:
+            raise ProviderError(f"POST {path} -> HTTP {resp.status_code}: {resp.text[:500]}")
+        return self._torrent_from_response(resp, path)
+
+    async def torrent_action(self, torrent_id: str, action: str) -> dict[str, Any] | None:
+        path = f"/torrents/{torrent_id}/action"
+        resp = await self._request("POST", path, json={"action": action})
+        if resp.status_code != 200:
+            raise ProviderError(f"POST {path} -> HTTP {resp.status_code}: {resp.text[:500]}")
+        try:
+            data = resp.json()
+            return data.get("torrent") if isinstance(data, dict) else None
+        except ValueError as exc:
+            raise ProviderError(f"non-JSON response from {path}") from exc
+
+    @staticmethod
+    def _torrent_from_response(resp: httpx.Response, path: str) -> dict[str, Any]:
+        try:
+            data = resp.json()
+            if not isinstance(data, dict) or not isinstance(data.get("torrent"), dict):
+                raise TypeError("missing torrent")
+            return data["torrent"]
+        except (TypeError, ValueError) as exc:
+            raise ProviderError(f"malformed {path} response") from exc
+
     async def get_by_id(self, track_id: str) -> TrackResponse:
         """Force-fetch a specific track by id (used by pause/resume)."""
         return await self._get_track(f"/tracks/{track_id}")
 
     async def list_tracks(
-        self, *, offset: int = 0, limit: int = 100, search: str | None = None
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        search: str | None = None,
+        provider: str | None = None,
+        media_type: str | None = None,
+        ready: bool | None = None,
     ) -> tuple[list[TrackResponse], int]:
         """List a page of tracks without forcing downloads."""
         params: dict[str, Any] = {"offset": offset, "limit": limit}
         if search:
             params["q"] = search
+        if provider:
+            params["provider"] = provider
+        if media_type:
+            params["type"] = media_type
+        if ready is not None:
+            params["cached"] = "ready" if ready else "missing"
         resp = await self._request("GET", "/tracks", params=params)
         if resp.status_code != 200:
             raise ProviderError(f"GET /tracks -> HTTP {resp.status_code}: {resp.text[:200]}")

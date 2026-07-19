@@ -28,6 +28,21 @@ AUDIO_EXTS: frozenset[str] = frozenset(
         ".aif",
         ".aiff",
         ".wma",
+        ".mka",  # Matroska audio
+        ".ac3",
+        ".eac3",
+        ".dts",
+        ".amr",
+        ".ape",
+        ".alac",
+        ".caf",
+        ".dsf",
+        ".dff",
+        ".wv",
+        ".tta",
+        ".tak",
+        ".mid",
+        ".midi",
     }
 )
 
@@ -47,6 +62,18 @@ VIDEO_EXTS: frozenset[str] = frozenset(
         ".mpeg",
         ".ts",
         ".3gp",
+        ".m2ts",
+        ".mts",
+        ".m2v",
+        ".vob",
+        ".ogv",
+        ".ogm",
+        ".asf",
+        ".rm",
+        ".rmvb",
+        ".3g2",
+        ".divx",
+        ".mxf",
     }
 )
 
