@@ -2,6 +2,7 @@
 
 Commands:
     /current     — Show the currently playing track (public, in-channel).
+    /next        — Skip to the next track in the queue.
     /leaderboard — Show listening leaderboard (ephemeral, only visible to caller).
 
 Design:
@@ -134,7 +135,27 @@ def build_commands(
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    async def next_command(interaction) -> None:
+        """Handle /next — skip to the next track."""
+        # Find stations in this guild that have listeners.
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        active_stations = [
+            s for s in stations.values()
+            if s.guild_id == guild_id and s.listener_count > 0
+        ]
+        if not active_stations:
+            await interaction.response.send_message(
+                "⏭️ No active listeners in this server to skip for.", ephemeral=True
+            )
+            return
+
+        for st in active_stations:
+            await st.player.skip()
+
+        await interaction.response.send_message("⏭️ Skipping to the next track…")
+
     return [
         ("current", "Show the currently playing track", current_command),
+        ("next", "Skip to the next track in the queue", next_command),
         ("leaderboard", "Show listening time leaderboard", leaderboard_command),
     ]
