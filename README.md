@@ -19,7 +19,7 @@ with milestones, and exposes an admin dashboard.
 │   │ File Provider │◀──────────▶│  TV Bot       │                   │
 │   │   (FastAPI)   │            │  (discord.py) │                   │
 │   │  Telethon /   │            │  + FFmpeg     │                   │
-│   │  Local FS     │            └──────┬────────┘                   │
+│   │ Local / aria2 │            └──────┬────────┘                   │
 │   └──────┬────────┘                   │                            │
 │          │                            │  writes                    │
 │          │  cache/*.audio             ▼                            │
@@ -42,7 +42,7 @@ Three independently-restartable services:
 
 | Service        | What it does                                              |
 | -------------- | --------------------------------------------------------- |
-| `file-provider`| Owns the playlist + on-disk cache + backend fallback logic (Telethon MTProto, local FS, more coming). Serves audio file paths to the bot over HTTP. |
+| `file-provider`| Owns the playlist + on-disk cache + backend fallback logic (Telethon MTProto, local FS, archive.org, and aria2 torrents). Serves audio file paths to the bot over HTTP. |
 | `bot`          | discord.py voice bot. Joins every *enabled* server's voice channel (multi-server), streams the shared radio via FFmpeg, tracks who's watching per server, checkpoints hourly, announces milestones. |
 | `dashboard`    | Admin web UI (FastAPI + Jinja2 + Discord OAuth2). Read-only pages + skip/pause/resume controls that go through a shared SQLite command queue. |
 
@@ -96,6 +96,7 @@ Backend setup guides:
 - **archive.org (public HTTP, no auth)** — [`docs/archive-org-setup.md`](docs/archive-org-setup.md)
 - **Telegram (MTProto via Telethon)** — [`docs/telegram-setup.md`](docs/telegram-setup.md)
 - **Admin OAuth2 dashboard** — [`docs/dashboard-setup.md`](docs/dashboard-setup.md)
+- **Torrent library / aria2 management** — [`docs/torrents.md`](docs/torrents.md)
 
 ---
 
@@ -131,12 +132,16 @@ The most important ones:
 | `DISCORD_VOICE_CHANNEL_ID`   | **Optional** bootstrap voice channel for that guild          |
 | `DISCORD_TEXT_CHANNEL_ID`    | **Optional** bootstrap text channel for Now Playing + milestones |
 | `ADMIN_USER_IDS`             | Comma-separated Discord user ids allowed into the dashboard  |
-| `FILE_PROVIDER_ORDER`        | Comma-separated backend order: `local`, `archive`, `telegram` |
+| `FILE_PROVIDER_ORDER`        | Comma-separated backend order: `local`, `torrent`, `archive`, `telegram` |
+| `FILE_PROVIDER_TORRENT_DATA_PATH` | Persistent aria2 download directory (default `/data/torrents`) |
+| `FILE_PROVIDER_TORRENT_ENABLED` | Enable the aria2 torrent backend (`1` by default) |
+| `FILE_PROVIDER_TORRENT_ALLOW_REMOTE_RPC` | Explicit opt-in for non-loopback aria2 RPC URLs |
+| `FILE_PROVIDER_TORRENT_MAX_SIZE_GB` / `FILE_PROVIDER_TORRENT_MAX_UPLOAD_MB` | Torrent and upload safety limits |
 | `ARCHIVE_ORG_ITEMS`          | Comma-separated Internet Archive item ids (public, no auth)  |
 | `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` / `TELEGRAM_CHANNEL_ID` | Telegram MTProto backend |
 | `LOCAL_MEDIA_PATH`           | Directory scanned by the local provider                      |
 | `DASHBOARD_SECRET_KEY`       | Signing key for session cookies (`openssl rand -hex 32`)     |
-| `CACHE_MAX_GB`               | Cache size ceiling (LRU eviction after)                      |
+| `FILE_PROVIDER_CACHE_MAX_GB` | Global provider-managed disk quota for cache and torrent storage |
 
 ---
 
@@ -147,7 +152,7 @@ bot/            discord.py bot, player, tracker, milestones, scheduler
 dashboard/      FastAPI + Jinja2 dashboard, Discord OAuth2, control queue
 db/             Shared SQLite layer + schema
 provider/       Async HTTP client used by the bot to talk to the provider
-file_provider/  Standalone FastAPI service: Telethon + Local providers + LRU cache
+file_provider/  Standalone FastAPI service: providers + aria2 torrent client + LRU cache
 tests/          pytest suite (>340 tests, no live Discord/Telegram needed)
 docs/           Backend setup guides
 ```

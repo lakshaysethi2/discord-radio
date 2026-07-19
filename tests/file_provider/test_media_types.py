@@ -11,11 +11,33 @@ from file_provider import media_types
 
 class TestExtensionSets:
     def test_audio_exts_include_common_formats(self) -> None:
-        for ext in (".mp3", ".m4a", ".opus", ".ogg", ".flac", ".wav", ".aac"):
+        for ext in (
+            ".mp3",
+            ".m4a",
+            ".opus",
+            ".ogg",
+            ".flac",
+            ".wav",
+            ".aac",
+            ".mka",
+            ".ape",
+            ".alac",
+        ):
             assert ext in media_types.AUDIO_EXTS
 
     def test_video_exts_include_common_formats(self) -> None:
-        for ext in (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"):
+        for ext in (
+            ".mp4",
+            ".mkv",
+            ".mov",
+            ".avi",
+            ".webm",
+            ".m4v",
+            ".m2ts",
+            ".mts",
+            ".vob",
+            ".ogv",
+        ):
             assert ext in media_types.VIDEO_EXTS
 
     def test_audio_and_video_are_disjoint(self) -> None:

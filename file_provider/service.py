@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from file_provider.cache import Cache
 from file_provider.db import ProviderDB
+from file_provider.storage import StorageQuota
 from file_provider.providers.base import BaseProvider, ProviderFetchError, ProviderTrack
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -98,6 +99,34 @@ class Service:
         # same file. Access to _fetch_locks itself is guarded by _lock.
         self._fetch_locks: dict[str, threading.Lock] = {}
 
+    # ------------------------------------------------------------- lifecycle
+    def start(self) -> None:
+        """Start lifecycle-aware providers such as the local aria2 client."""
+        for provider in self.providers:
+            start = getattr(provider, "start", None)
+            if not callable(start):
+                continue
+            try:
+                start()
+            except Exception as exc:  # one optional backend must not kill the service
+                log.warning("provider %s failed to start: %s", provider.name, exc)
+
+    def shutdown(self) -> None:
+        """Stop optional provider processes during ASGI shutdown."""
+        for provider in self.providers:
+            stop = getattr(provider, "stop", None)
+            if not callable(stop):
+                continue
+            with contextlib.suppress(Exception):
+                stop()
+
+    def torrent_provider(self):
+        """Return the configured torrent provider, if present."""
+        for provider in self.providers:
+            if provider.name == "torrent":
+                return provider
+        return None
+
     def _fetch_lock(self, track_id: str) -> threading.Lock:
         with self._lock:
             lk = self._fetch_locks.get(track_id)
@@ -151,8 +180,16 @@ class Service:
             self.db.mark_provider(provider.name, healthy=True)
             rows = self._provider_tracks_to_rows(provider, found)
             added, updated = self.db.upsert_tracks(rows)
-            active_refs = {t.source_ref for t in found}
-            self.db.prune_provider_tracks(provider.name, active_refs)
+            # A successful scan is authoritative. In particular this removes
+            # torrent files that an admin disabled from the playable playlist;
+            # older backends also benefit when a source file is deleted.
+            removed = self.db.remove_provider_tracks_not_in(
+                provider.name, {row["source_ref"] for row in rows}
+            )
+            for _track_id, cache_path in removed:
+                if cache_path:
+                    with contextlib.suppress(OSError):
+                        Path(cache_path).unlink()
             added_total += added
             updated_total += updated
         return {
@@ -229,12 +266,28 @@ class Service:
             return self._ensure_and_wrap(row)
 
     def list_all(
-        self, *, offset: int = 0, limit: int = 100, search: str | None = None
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        search: str | None = None,
+        provider: str | None = None,
+        has_video: bool | None = None,
+        ready: bool | None = None,
     ) -> tuple[list[TrackPayload], int]:
         """Return a metadata-only track page and total; never downloads files."""
         with self._lock:
-            rows = self.db.list_all(offset=offset, limit=limit, search=search)
-            total = self.db.count_tracks(search=search)
+            rows = self.db.list_all(
+                offset=offset,
+                limit=limit,
+                search=search,
+                provider=provider,
+                has_video=has_video,
+                ready=ready,
+            )
+            total = self.db.count_tracks(
+                search=search, provider=provider, has_video=has_video, ready=ready
+            )
             payloads = [self._metadata_payload(row) for row in rows]
             return payloads, total
 
@@ -388,13 +441,28 @@ class Service:
 def build_service(config: Config, providers: list[BaseProvider] | None = None) -> Service:
     """Wire everything together from a Config."""
     db = ProviderDB(config.db_path)
-    cache = Cache(Path(config.cache_path), db, config.cache_max_bytes)
+    cache_root = Path(config.cache_path)
+    torrent_root = Path(config.torrent_data_path)
+    quota = StorageQuota(
+        config.cache_max_bytes,
+        [
+            cache_root,
+            torrent_root,
+            Path(config.db_path),
+            torrent_root.parent / "aria2.session",
+        ],
+    )
+    cache = Cache(cache_root, db, config.cache_max_bytes, quota=quota)
     if providers is None:
-        providers = _providers_from_config(config)
+        providers = _providers_from_config(config, db, quota)
     return Service(db=db, cache=cache, providers=providers)
 
 
-def _providers_from_config(config: Config) -> list[BaseProvider]:
+def _providers_from_config(
+    config: Config,
+    db: ProviderDB | None = None,
+    quota: StorageQuota | None = None,
+) -> list[BaseProvider]:
     """Instantiate providers per FILE_PROVIDER_ORDER."""
     from file_provider.providers.local import LocalProvider
 
@@ -404,9 +472,38 @@ def _providers_from_config(config: Config) -> list[BaseProvider]:
 
     out: list[BaseProvider] = []
     has_archive = "archive" in config.provider_order
-    for name in config.provider_order:
+    provider_names = list(config.provider_order)
+    # Keep the management API useful for existing installations whose .env
+    # predates the torrent backend and still says FILE_PROVIDER_ORDER=local.
+    if config.torrent_enabled and "torrent" not in provider_names:
+        provider_names.append("torrent")
+    for name in provider_names:
         if name == "local":
             out.append(LocalProvider(config.local_media_path))
+        elif name == "torrent":
+            if not config.torrent_enabled:
+                log.info("torrent provider disabled by configuration")
+                continue
+            from file_provider.providers.torrent import TorrentProvider
+            from file_provider.torrent_client import TorrentManager
+
+            out.append(
+                TorrentProvider(
+                    TorrentManager(
+                        db or ProviderDB(config.db_path),
+                        config.torrent_data_path,
+                        rpc_url=config.torrent_rpc_url,
+                        rpc_secret=config.torrent_rpc_secret,
+                        rpc_port=config.torrent_rpc_port,
+                        binary=config.torrent_binary,
+                        allow_remote_rpc=config.torrent_allow_remote_rpc,
+                        max_size_bytes=config.torrent_max_size_bytes,
+                        max_upload_bytes=config.torrent_max_upload_bytes,
+                        allowed_extensions=config.torrent_allowed_extensions,
+                        quota=quota,
+                    )
+                )
+            )
         elif name == "archive":
             from file_provider.providers.archive import ArchiveOrgProvider
 

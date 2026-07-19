@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Torrents — TV Bot{% endblock %}
+{% block content %}
+  <div class="flex flex-wrap items-center gap-3 mb-5">
+    <div>
+      <h1 class="text-lg font-semibold">Torrent library</h1>
+      <p class="text-xs text-slate-500 mt-1">Download torrents with aria2, then choose individual files for the radio playlist.</p>
+    </div>
+  </div>
+
+  {% if error %}
+    <div class="p-3 mb-4 text-sm text-red-200 bg-red-900/30 border border-red-500/40 rounded-lg">{{ error }}</div>
+  {% endif %}
+  {% if command_flash %}
+    <div class="p-3 mb-4 text-sm text-emerald-200 bg-emerald-900/30 border border-emerald-500/40 rounded-lg">{{ command_flash }}</div>
+  {% endif %}
+
+  <section class="rounded-lg bg-slate-900 p-5 border border-slate-800 mb-6">
+    <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-3">Add torrent</h2>
+    <form action="/torrents/add" method="post" enctype="multipart/form-data" class="space-y-3">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="flex flex-wrap gap-2">
+        <input type="url" name="magnet" placeholder="magnet:?xt=urn:btih:…" class="grow min-w-[16rem] px-3 py-2 rounded bg-slate-950 border border-slate-700 text-sm">
+        <span class="self-center text-xs text-slate-500">or</span>
+        <input type="file" name="torrent_file" accept=".torrent,application/x-bittorrent" class="max-w-full text-sm text-slate-400 file:mr-3 file:px-3 file:py-2 file:rounded file:border-0 file:bg-slate-700 file:text-slate-100">
+      </div>
+      <button class="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-sm">Add torrent</button>
+    </form>
+  </section>
+
+  <div class="space-y-5">
+    {% for torrent in torrents %}
+      <section class="rounded-lg bg-slate-900 border border-slate-800 overflow-hidden">
+        <div class="p-4 border-b border-slate-800 flex flex-wrap items-start gap-3">
+          <div class="grow min-w-0">
+            <h2 class="font-semibold truncate" title="{{ torrent.name or torrent.gid }}">{{ torrent.name or 'Fetching torrent metadata…' }}</h2>
+            <p class="text-xs text-slate-500 mt-1 font-mono truncate">{{ torrent.gid }}{% if torrent.info_hash %} · {{ torrent.info_hash }}{% endif %}</p>
+          </div>
+          <div class="text-right text-xs">
+            <span class="px-2 py-1 rounded {% if torrent.status == 'complete' %}bg-emerald-900/50 text-emerald-300{% elif torrent.status == 'error' %}bg-red-900/50 text-red-300{% elif torrent.status == 'paused' %}bg-amber-900/50 text-amber-300{% else %}bg-slate-800 text-slate-300{% endif %}">{{ torrent.status }}</span>
+            <div class="text-slate-400 mt-2 tabular-nums">{{ torrent.progress_percent }}%</div>
+          </div>
+          <div class="flex gap-2 text-xs w-full sm:w-auto">
+            {% if torrent.status == 'paused' %}
+              <form action="/torrents/{{ torrent.gid }}/action" method="post"><input type="hidden" name="action" value="resume"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Resume</button></form>
+            {% elif torrent.status not in ('complete', 'error', 'removed') %}
+              <form action="/torrents/{{ torrent.gid }}/action" method="post"><input type="hidden" name="action" value="pause"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Pause</button></form>
+            {% endif %}
+            <form action="/torrents/{{ torrent.gid }}/action" method="post" onsubmit="return confirm('Remove this torrent and its files from the library?')"><input type="hidden" name="action" value="remove"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="px-2 py-1 rounded bg-red-900/60 hover:bg-red-800 text-red-200">Remove</button></form>
+          </div>
+        </div>
+        <div class="h-1 bg-slate-800"><div class="h-1 bg-indigo-500" style="width: {{ torrent.progress_percent }}%"></div></div>
+        {% if torrent.error_message %}<p class="px-4 pt-3 text-xs text-red-300">{{ torrent.error_message }}</p>{% endif %}
+        {% if torrent.files and torrent.files|length == 1 and torrent.files[0].is_metadata %}
+          <p class="px-4 pt-3 text-xs text-amber-400">aria2 is still resolving magnet metadata. Real torrent files will appear after a peer responds. If you have the .torrent file, upload it directly instead.</p>
+        {% endif %}
+        {% if torrent.files %}
+          <div class="px-4 pt-4 text-xs uppercase tracking-wider text-slate-500">Files ({{ torrent.files|length }})</div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead class="text-xs uppercase text-slate-500"><tr><th class="text-left px-4 py-2">File</th><th class="text-right px-4 py-2">Progress</th><th class="text-right px-4 py-2">Playlist</th></tr></thead>
+              <tbody>
+                {% for file in torrent.files %}
+                  <tr class="border-t border-slate-800/60 {% if file.playlist_enabled %}bg-indigo-950/30{% endif %}">
+                    <td class="px-4 py-2 max-w-xl truncate" title="{{ file.path }}">
+                      {% if file.is_complete %}<span class="text-emerald-400 mr-1">✓</span>{% else %}<span class="text-slate-600 mr-1">↓</span>{% endif %}
+                      {{ file.path }}
+                    </td>
+                    <td class="px-4 py-2 text-right tabular-nums text-xs {% if file.is_complete %}text-emerald-400{% else %}text-slate-400{% endif %}">{{ file.progress_percent }}%</td>
+                    <td class="px-4 py-2 text-right">
+                      {% if file.is_metadata %}
+                        <span class="text-xs text-slate-500">waiting for metadata</span>
+                      {% elif file.playable %}
+                        <form action="/torrents/{{ torrent.gid }}/files/{{ file.file_index }}" method="post">
+                          <input type="hidden" name="csrf" value="{{ csrf }}">
+                          {% if file.playlist_enabled %}
+                            <input type="hidden" name="enabled" value="0"><button class="px-2 py-1 rounded bg-indigo-700 hover:bg-indigo-600 text-xs">Remove from playlist</button>
+                          {% else %}
+                            <input type="hidden" name="enabled" value="1"><button class="px-2 py-1 rounded {% if file.is_complete %}bg-slate-700 hover:bg-slate-600{% else %}bg-slate-800 text-slate-500{% endif %} text-xs">Add to playlist</button>
+                          {% endif %}
+                        </form>
+                      {% else %}
+                        <form action="/torrents/{{ torrent.gid }}/files/{{ file.file_index }}" method="post" class="inline-flex items-center gap-2">
+                          <input type="hidden" name="csrf" value="{{ csrf }}">
+                          <input type="hidden" name="enabled" value="1">
+                          <input type="hidden" name="force" value="1">
+                          <span class="text-xs text-amber-500" title="The extension is not in the configured allow-list">unrecognized type</span>
+                          <button class="px-2 py-1 rounded bg-amber-700 hover:bg-amber-600 text-xs" title="Only use this when you have verified it contains audio/video">Use as media</button>
+                        </form>
+                      {% endif %}
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="px-4 py-5 text-sm text-slate-500">Waiting for torrent metadata and file list…</p>
+        {% endif %}
+      </section>
+    {% else %}
+      {% if not error %}<div class="rounded-lg bg-slate-900 border border-slate-800 px-4 py-8 text-center text-slate-500">No torrents yet. Add a magnet link or .torrent file above.</div>{% endif %}
+    {% endfor %}
+  </div>
+{% endblock %}
