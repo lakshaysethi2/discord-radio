@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from db.database import Database
+from db.guilds import apply_guild_config, get_guild_config
 from db.models import MILESTONES
 
 log = logging.getLogger(__name__)
@@ -74,9 +75,13 @@ class MilestoneChecker:
 class MilestoneAnnouncer:
     """Discord-side wrapper: check + post to the configured text channel."""
 
-    def __init__(self, *, client: Any, text_channel_id: int, db: Database) -> None:
+    def __init__(
+        self, *, client: Any, text_channel_id: int, db: Database, guild_id: str = ""
+    ) -> None:
         self.client = client
         self.text_channel_id = text_channel_id
+        self.db = db
+        self.guild_id = guild_id
         self.checker = MilestoneChecker(db)
 
     async def check_and_announce(self, user_id: str) -> list[Milestone]:
@@ -89,9 +94,26 @@ class MilestoneAnnouncer:
                 "cannot announce milestones: text channel %s not found", self.text_channel_id
             )
             return milestones
+        import discord
+
         for m in milestones:
             try:
                 await channel.send(f"🎉 <@{m.user_id}> just reached **{m.hours} hours** watched!")
+            except discord.Forbidden:
+                log.warning(
+                    "cannot announce milestones: missing access to text channel %s",
+                    self.text_channel_id,
+                )
+                self.text_channel_id = None
+                cfg = get_guild_config(self.db, self.guild_id)
+                if cfg:
+                    apply_guild_config(
+                        self.db,
+                        self.guild_id,
+                        enabled=cfg.enabled,
+                        voice_channel_id=cfg.voice_channel_id,
+                        text_channel_id=None,
+                    )
             except Exception:  # pragma: no cover — network flake
                 log.exception("failed to announce milestone %s for %s", m.hours, user_id)
         return milestones
@@ -166,6 +188,22 @@ class NowPlaying:
 
         try:
             msg = await channel.send(embed=embed)
+        except discord.Forbidden:
+            log.warning(
+                "cannot post Now Playing: missing access to text channel %s",
+                self.text_channel_id,
+            )
+            self.text_channel_id = None
+            cfg = get_guild_config(self.db, self.guild_id)
+            if cfg:
+                apply_guild_config(
+                    self.db,
+                    self.guild_id,
+                    enabled=cfg.enabled,
+                    voice_channel_id=cfg.voice_channel_id,
+                    text_channel_id=None,
+                )
+            return
         except Exception:
             log.exception("could not post Now Playing embed")
             return
@@ -173,6 +211,8 @@ class NowPlaying:
 
     async def update_watcher_count(self) -> None:
         """Edit the current Now Playing message to update the currently watching count."""
+        import discord
+
         prev_id = self.state.now_playing_message_id
         if not prev_id:
             return
@@ -193,6 +233,21 @@ class NowPlaying:
                         )
                         await msg.edit(embed=embed)
                         break
+        except discord.Forbidden:
+            log.warning(
+                "cannot update Now Playing: missing access to text channel %s",
+                self.text_channel_id,
+            )
+            self.text_channel_id = None
+            cfg = get_guild_config(self.db, self.guild_id)
+            if cfg:
+                apply_guild_config(
+                    self.db,
+                    self.guild_id,
+                    enabled=cfg.enabled,
+                    voice_channel_id=cfg.voice_channel_id,
+                    text_channel_id=None,
+                )
         except Exception:
             log.debug("could not update watcher count on message %s", prev_id)
 
