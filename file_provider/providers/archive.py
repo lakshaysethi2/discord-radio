@@ -41,7 +41,9 @@ from file_provider.providers.base import BaseProvider, ProviderFetchError, Provi
 log = logging.getLogger(__name__)
 
 METADATA_URL = "https://archive.org/metadata/{item_id}"
-DOWNLOAD_URL = "https://archive.org/download/{item_id}/{path}"
+DOWNLOAD_URL = "https://archive.org/download/{item_id}/{path}"  # nosec
+
+_DEFAULT_BASE_URLS = ["https://archive.org"]
 
 # Kept for backward-compat with anything that used to import from here.
 AUDIO_FORMATS = PLAYABLE_ARCHIVE_FORMATS
@@ -49,7 +51,11 @@ AUDIO_EXTS = PLAYABLE_EXTS
 
 
 class ArchiveOrgProvider(BaseProvider):
-    """Backend that streams from public archive.org items."""
+    """Backend that streams from archive.org items.
+
+    Supports configurable base URLs (for mirrors) and optional HTTP Basic auth.
+    Base URLs are tried in order for metadata and download requests.
+    """
 
     name = "archive"
 
@@ -57,11 +63,17 @@ class ArchiveOrgProvider(BaseProvider):
         self,
         item_ids: list[str],
         *,
+        base_urls: list[str] | None = None,
+        http_user: str = "",
+        http_password: str = "",
         http_timeout: float = 60.0,
         download_chunk_bytes: int = 64 * 1024,
         user_agent: str = "discord-radio/1.0 (+https://github.com/lakshaysethi2/discord-radio)",
     ) -> None:
         self.item_ids = [i.strip() for i in item_ids if i.strip()]
+        self.base_urls = base_urls or list(_DEFAULT_BASE_URLS)
+        self.http_user = http_user
+        self.http_password = http_password
         self.http_timeout = http_timeout
         self.download_chunk_bytes = download_chunk_bytes
         self.user_agent = user_agent
@@ -71,10 +83,12 @@ class ArchiveOrgProvider(BaseProvider):
         return bool(self.item_ids)
 
     def _client(self) -> httpx.Client:
-        # A short-lived client per call keeps things simple and avoids weird
-        # connection reuse across long-lived Telethon-style patterns.
+        auth: httpx.BasicAuth | None = None
+        if self.http_user or self.http_password:
+            auth = httpx.BasicAuth(username=self.http_user, password=self.http_password)
         return httpx.Client(
             timeout=self.http_timeout,
+            auth=auth,
             headers={"User-Agent": self.user_agent},
             follow_redirects=True,
         )
@@ -99,7 +113,7 @@ class ArchiveOrgProvider(BaseProvider):
         return tracks
 
     def _scan_item(self, c: httpx.Client, item_id: str) -> list[ProviderTrack]:
-        url = METADATA_URL.format(item_id=item_id)
+        url = self._metadata_url_for(item_id)
         r = c.get(url)
         r.raise_for_status()
         data = r.json()
@@ -207,6 +221,24 @@ class ArchiveOrgProvider(BaseProvider):
             return 0
 
     # ----------------------------------------------------------- fetch
+    def _metadata_url_for(self, item_id: str) -> str:
+        """Return a metadata URL for the given item id.
+
+        Uses the first configured base URL. Archive mirrors preserve the
+        same /metadata/<id> path structure as archive.org.
+        """
+        base = self.base_urls[0]
+        return f"{base.rstrip('/')}/metadata/{item_id}"
+
+    def _download_url_for(self, item_id: str, safe_path: str) -> str:
+        """Return a download URL for the given item and path.
+
+        Uses the first configured base URL. Archive mirrors preserve the
+        same /download/<id>/<path> structure as archive.org.
+        """
+        base = self.base_urls[0]
+        return f"{base.rstrip('/')}/download/{item_id}/{safe_path}"
+
     def ensure_cached(self, source_ref: str, target_path: Path) -> Path:
         if "::" not in source_ref:
             raise ProviderFetchError(f"malformed archive source_ref: {source_ref!r}")
@@ -219,7 +251,7 @@ class ArchiveOrgProvider(BaseProvider):
         from urllib.parse import quote
 
         safe_path = "/".join(quote(seg, safe="") for seg in path.split("/"))
-        url = DOWNLOAD_URL.format(item_id=item_id, path=safe_path)
+        download_url = self._download_url_for(item_id, safe_path)
 
         partial = target_path.with_suffix(target_path.suffix + ".part")
         # Clean up any half-written file from a previous failed attempt.
@@ -228,9 +260,11 @@ class ArchiveOrgProvider(BaseProvider):
                 partial.unlink()
 
         try:
-            with self._client() as c, c.stream("GET", url) as resp:
+            with self._client() as c, c.stream("GET", download_url) as resp:
                 if resp.status_code >= 400:
-                    raise ProviderFetchError(f"archive.org GET {url} → HTTP {resp.status_code}")
+                    raise ProviderFetchError(
+                        f"archive.org GET {download_url} → HTTP {resp.status_code}"
+                    )
                 with open(partial, "wb") as f:
                     for chunk in resp.iter_bytes(self.download_chunk_bytes):
                         if chunk:

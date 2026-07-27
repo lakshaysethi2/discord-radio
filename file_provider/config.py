@@ -118,11 +118,39 @@ class Config:
         default_factory=lambda: os.environ.get("LOCAL_MEDIA_PATH", "./media")
     )
 
+    # ---- HTTP media provider ----
+    # Private HTTP media library (rclone serve http / nginx autoindex).
+    # Set HTTP_MEDIA_BASE_URL to enable this provider.
+    http_media_base_url: str = field(
+        default_factory=lambda: os.environ.get("HTTP_MEDIA_BASE_URL", "")
+    )
+    http_media_user: str = field(
+        default_factory=lambda: os.environ.get("HTTP_MEDIA_USER", "")
+    )
+    http_media_password: str = field(
+        default_factory=lambda: os.environ.get("HTTP_MEDIA_PASSWORD", "")
+    )
+    http_media_timeout: float = field(
+        default_factory=lambda: _env_float("HTTP_MEDIA_TIMEOUT", 60.0)
+    )
+
     # ---- archive.org ----
     # Comma-separated Internet Archive item ids (e.g.
     # "Hawkins_Lectures_transcoded_actual_files"). Each item's original-source
     # audio files become playlist entries. Public API, no auth needed.
     archive_org_items: list[str] = field(default_factory=lambda: _env_list("ARCHIVE_ORG_ITEMS", ""))
+    # Optional: comma-separated base URLs for archive.org mirrors.
+    # Defaults to "https://archive.org" when unset.
+    archive_org_base_urls: list[str] = field(
+        default_factory=lambda: _env_list("ARCHIVE_ORG_BASE_URLS", "https://archive.org")
+    )
+    # Optional HTTP Basic auth for the archive base URLs.
+    archive_org_http_user: str = field(
+        default_factory=lambda: os.environ.get("ARCHIVE_ORG_HTTP_USER", "")
+    )
+    archive_org_http_password: str = field(
+        default_factory=lambda: os.environ.get("ARCHIVE_ORG_HTTP_PASSWORD", "")
+    )
 
     # ---- Telegram ----
     telegram_api_id: str = field(default_factory=lambda: os.environ.get("TELEGRAM_API_ID", ""))

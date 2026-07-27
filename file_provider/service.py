@@ -259,11 +259,84 @@ class Service:
             return out
 
     def get_by_id(self, track_id: str) -> TrackPayload:
+        """Fetch a track by id.
+
+        For already-cached tracks this returns immediately without blocking
+        on locks held by unrelated downloads.
+        """
         with self._lock:
             row = self.db.fetchone("SELECT * FROM tracks WHERE track_id=?", (track_id,))
             if row is None:
                 raise KeyError(track_id)
-            return self._ensure_and_wrap(row)
+
+            provider = self._provider_by_name.get(row["provider"])
+            if provider is None:
+                raise ProviderFetchError(f"unknown provider '{row['provider']}'")
+
+            # Fast path: already cached — return immediately without
+            # releasing the lock (no I/O involved).
+            cached = self.cache.get(row["track_id"])
+            if cached is not None:
+                return TrackPayload(
+                    track_id=row["track_id"],
+                    title=row["title"],
+                    duration_seconds=int(row["duration_seconds"] or 0),
+                    local_path=str(cached),
+                    provider_used=provider.name,
+                    playlist_position=self._position_of(row["track_id"]),
+                    ready=True,
+                    has_video=bool(row["has_video"])
+                    if "has_video" in row.keys()
+                    else False,
+                )
+
+            # Need to fetch — capture what we need under the lock, then
+            # release so concurrent requests for *other* tracks are not blocked.
+            target = self.cache.path_for(row["track_id"])
+            source_ref = row["source_ref"]
+            track_id_inner = row["track_id"]
+            needed = int(row["size_bytes"] or 0) or 50 * 1024 * 1024
+
+        # Outside the service lock: do the per-track fetch.
+        with self._fetch_lock(track_id_inner):
+            # Double-check: someone else may have cached it while we waited.
+            cached = self.cache.get(track_id_inner)
+            if cached is not None:
+                local_path = cached
+            else:
+                self.cache.evict_until_free(needed, protect={track_id_inner})
+                try:
+                    local_path = provider.ensure_cached(source_ref, target)
+                except ProviderFetchError:
+                    self.db.mark_provider(provider.name, healthy=False, error="fetch failed")
+                    raise
+                self.cache.record(track_id_inner, local_path)
+
+            with self._lock:
+                row_after = self.db.fetchone(
+                    "SELECT * FROM tracks WHERE track_id=?", (track_id_inner,)
+                )
+                if row_after is None:
+                    # Track was removed while we were fetching — still return
+                    # what we have so the caller can play it.
+                    playlist_pos = 0
+                else:
+                    playlist_pos = self._position_of(track_id_inner)
+
+            self.db.mark_provider(provider.name, healthy=True)
+
+        return TrackPayload(
+            track_id=track_id_inner,
+            title=row["title"],
+            duration_seconds=int(row["duration_seconds"] or 0),
+            local_path=str(local_path),
+            provider_used=provider.name,
+            playlist_position=playlist_pos,
+            ready=True,
+            has_video=bool(row["has_video"])
+            if "has_video" in row.keys()
+            else False,
+        )
 
     def list_all(
         self,
@@ -507,7 +580,25 @@ def _providers_from_config(
         elif name == "archive":
             from file_provider.providers.archive import ArchiveOrgProvider
 
-            out.append(ArchiveOrgProvider(item_ids=archive_items))
+            out.append(
+                ArchiveOrgProvider(
+                    item_ids=archive_items,
+                    base_urls=list(config.archive_org_base_urls),
+                    http_user=config.archive_org_http_user,
+                    http_password=config.archive_org_http_password,
+                )
+            )
+        elif name == "http":
+            from file_provider.providers.http_media import HttpMediaProvider
+
+            out.append(
+                HttpMediaProvider(
+                    base_url=config.http_media_base_url,
+                    username=config.http_media_user,
+                    password=config.http_media_password,
+                    http_timeout=config.http_media_timeout,
+                )
+            )
         elif name == "telegram":
             from file_provider.providers.telegram import TelegramProvider
 
@@ -525,6 +616,13 @@ def _providers_from_config(
     if not has_archive and archive_items:
         from file_provider.providers.archive import ArchiveOrgProvider
 
-        out.append(ArchiveOrgProvider(item_ids=archive_items))
+        out.append(
+            ArchiveOrgProvider(
+                item_ids=archive_items,
+                base_urls=list(config.archive_org_base_urls),
+                http_user=config.archive_org_http_user,
+                http_password=config.archive_org_http_password,
+            )
+        )
 
     return out

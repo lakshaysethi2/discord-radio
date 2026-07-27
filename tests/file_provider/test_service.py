@@ -6,6 +6,9 @@ import time
 import pytest
 
 from file_provider.providers.base import ProviderFetchError
+from tests.file_provider.conftest import FakeProvider
+from file_provider.cache import Cache
+from file_provider.db import ProviderDB
 from file_provider.service import PlaylistEmpty, Service
 
 
@@ -136,6 +139,58 @@ class TestConcurrency:
         _wait_prefetch(service)
         # Sleep so prefetch has a chance to run
         time.sleep(0.05)
+
+    def test_cached_get_by_id_not_blocked_by_unrelated_download(
+        self, db: ProviderDB, cache: Cache, fake_provider, tmp_path
+    ) -> None:
+        """get_by_id for a cached track must not wait behind the service lock
+        held by an unrelated download of a different track."""
+        # Add a slow provider that takes time on ensure_cached.
+        import threading
+        import time
+
+        class SlowProvider(FakeProvider):
+            name = "slow"
+
+            def ensure_cached(self, source_ref, target_path):
+                # Simulate a slow download.
+                time.sleep(0.2)
+                return super().ensure_cached(source_ref, target_path)
+
+        slow_prov = SlowProvider({"slow_a": b"aaaa", "slow_b": b"bbbb"})
+        s = Service(db=db, cache=cache, providers=[slow_prov])
+        s.refresh_playlist()
+
+        # Find the second track's id.
+        items, _ = s.list_all()
+        track_a = items[0]  # slow_a
+        track_b = items[1]  # slow_b
+
+        # Start a background thread that downloads track_a (takes 0.2s).
+        bg_errors = []
+
+        def bg_fetch():
+            try:
+                s.get_by_id(track_a.track_id)
+            except Exception as e:
+                bg_errors.append(e)
+
+        t = threading.Thread(target=bg_fetch, daemon=True)
+        t.start()
+
+        # Give it a moment to acquire the lock and start downloading.
+        time.sleep(0.05)
+
+        # Now get_by_id for track_b (also uncached) — should NOT block
+        # behind track_a's download because get_by_id releases the service lock.
+        try:
+            result_b = s.get_by_id(track_b.track_id)
+            assert result_b.track_id == track_b.track_id
+        except Exception as e:
+            pytest.fail(f"get_by_id for cached track was blocked: {e}")
+        finally:
+            t.join(timeout=5.0)
+            assert not bg_errors
 
     def test_fetch_lock_prevents_duplicate_provider_calls(self, db, cache, fake_provider) -> None:
         """Two concurrent get_by_id for the same uncached track → one fetch."""

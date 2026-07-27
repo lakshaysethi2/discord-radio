@@ -318,3 +318,90 @@ class TestFetch:
         target = tmp_path / "x.mp3"
         provider.ensure_cached("item::sub folder/track #1 #name.mp3", target)
         assert route.called
+
+
+# ============================================================ multi-base URL
+class TestMultiBase:
+    @respx.mock
+    def test_custom_base_url_for_scan(self) -> None:
+        """A custom base URL is used for metadata scan instead of archive.org."""
+        provider = ArchiveOrgProvider(
+            item_ids=["test-item"],
+            base_urls=["https://archive-mirror.example.com"],
+        )
+        route = respx.get("https://archive-mirror.example.com/metadata/test-item").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "files": [
+                        {"name": "track.mp3", "source": "original", "format": "VBR MP3", "size": "1000"},
+                    ]
+                },
+            )
+        )
+        tracks = provider.list_tracks()
+        assert len(tracks) == 1
+        assert route.called
+
+    @respx.mock
+    def test_custom_base_url_for_download(self, tmp_path: Path) -> None:
+        """A custom base URL is used for downloads."""
+        provider = ArchiveOrgProvider(
+            item_ids=["test-item"],
+            base_urls=["https://archive-mirror.example.com"],
+        )
+        payload = b"from mirror"
+        route = respx.get(
+            "https://archive-mirror.example.com/download/test-item/track.mp3"
+        ).mock(return_value=httpx.Response(200, content=payload))
+        target = tmp_path / "x.mp3"
+        provider.ensure_cached("test-item::track.mp3", target)
+        assert route.called
+        assert target.read_bytes() == payload
+
+    @respx.mock
+    def test_default_base_url_when_unset(self) -> None:
+        """When base_urls is None, defaults to archive.org."""
+        provider = ArchiveOrgProvider(item_ids=["test-item"])
+        assert provider.base_urls == ["https://archive.org"]
+        route = respx.get("https://archive.org/metadata/test-item").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "files": [
+                        {"name": "a.mp3", "source": "original", "format": "VBR MP3", "size": "1"},
+                    ]
+                },
+            )
+        )
+        tracks = provider.list_tracks()
+        assert len(tracks) == 1
+        assert route.called
+
+    @respx.mock
+    def test_basic_auth_on_custom_base(self, tmp_path: Path) -> None:
+        """HTTP Basic auth is sent with requests to custom base URLs."""
+        provider = ArchiveOrgProvider(
+            item_ids=["test-item"],
+            base_urls=["https://private-mirror.example.com"],
+            http_user="mirror-user",
+            http_password="mirror-pass",
+        )
+        route = respx.get("https://private-mirror.example.com/metadata/test-item").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "files": [
+                        {"name": "sec.mp3", "source": "original", "format": "VBR MP3", "size": "100"},
+                    ]
+                },
+            )
+        )
+        tracks = provider.list_tracks()
+        assert len(tracks) == 1
+        request = route.calls[0].request
+        auth = request.headers.get("Authorization", "")
+        assert auth.startswith("Basic ")
+        import base64
+        decoded = base64.b64decode(auth.replace("Basic ", "", 1)).decode()
+        assert decoded == "mirror-user:mirror-pass"

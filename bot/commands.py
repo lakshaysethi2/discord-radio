@@ -62,16 +62,25 @@ def build_commands(
     """
 
     async def current_command(interaction) -> None:
-        """Handle /current — show the currently playing track."""
+        """Handle /current — show the currently playing track.
+
+        Always defers first so Discord never sees a naked timeout even when
+        the file-provider is slow to respond. Uses followup.send to preserve
+        public (non-ephemeral) visibility when a track is playing.
+        """
         import discord
 
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
 
+        # Defer immediately so Discord's 3-second interaction window is always
+        # ACKed before any provider HTTP call.
+        await interaction.response.defer(ephemeral=False)
+
         # Gather track info from provider + state.
         track_id = state.current_track_id
         if not track_id:
-            await interaction.response.send_message(
-                "🎙️ Nothing is playing right now.", ephemeral=True
+            await interaction.followup.send(
+                "🎙️ Nothing is playing right now."
             )
             return
 
@@ -79,8 +88,8 @@ def build_commands(
             track = await provider.get_by_id(track_id)
         except Exception:
             log.exception("failed to fetch current track from provider")
-            await interaction.response.send_message(
-                "⚠️ Could not reach the file provider. Try again in a moment.", ephemeral=True
+            await interaction.followup.send(
+                "⚠️ Could not reach the file provider. Try again in a moment."
             )
             return
 
@@ -103,7 +112,7 @@ def build_commands(
         embed.add_field(name="Track #", value=f"{track.playlist_position + 1}")
         embed.add_field(name="Currently watching", value=f"👥 {watchers}")
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     async def leaderboard_command(interaction) -> None:
         """Handle /leaderboard — show listening leaderboard (ephemeral)."""

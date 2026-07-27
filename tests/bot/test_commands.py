@@ -67,12 +67,17 @@ def _fake_interaction(
     *,
     guild_id: int | None = 999,
     response_send: AsyncMock | None = None,
+    response_defer: AsyncMock | None = None,
+    followup_send: AsyncMock | None = None,
 ) -> MagicMock:
     """Build a MagicMock that behaves enough like discord.Interaction."""
     inter = MagicMock()
     inter.guild_id = guild_id
     inter.response = MagicMock()
     inter.response.send_message = response_send or AsyncMock()
+    inter.response.defer = response_defer or AsyncMock()
+    inter.followup = MagicMock()
+    inter.followup.send = followup_send or AsyncMock()
     return inter
 
 
@@ -181,8 +186,9 @@ class TestCurrentCommand:
         cb = self._get_current(cmds)
         inter = _fake_interaction()
         await cb(inter)
-        inter.response.send_message.assert_awaited_once()
-        args, kwargs = inter.response.send_message.call_args
+        inter.response.defer.assert_awaited_once()
+        inter.followup.send.assert_awaited_once()
+        args, kwargs = inter.followup.send.call_args
         assert "Nothing is playing" in str(args[0])
 
     async def test_shows_current_track_info(
@@ -199,8 +205,9 @@ class TestCurrentCommand:
         cb = self._get_current(cmds)
         inter = _fake_interaction()
         await cb(inter)
-        inter.response.send_message.assert_awaited_once()
-        _, kwargs = inter.response.send_message.call_args
+        inter.response.defer.assert_awaited_once_with(ephemeral=False)
+        inter.followup.send.assert_awaited_once()
+        _, kwargs = inter.followup.send.call_args
         embed = kwargs["embed"]
         assert embed.title == "🎙️ Now Playing"
         assert "Test Track" in (embed.description or "")
@@ -220,7 +227,7 @@ class TestCurrentCommand:
         cb = self._get_current(cmds)
         inter = _fake_interaction()
         await cb(inter)
-        _, kwargs = inter.response.send_message.call_args
+        _, kwargs = inter.followup.send.call_args
         embed = kwargs["embed"]
         progress_field = next((f for f in embed.fields if f.name == "Progress"), None)
         assert progress_field is not None
@@ -241,10 +248,10 @@ class TestCurrentCommand:
         cb = self._get_current(cmds)
         inter = _fake_interaction()
         await cb(inter)
-        inter.response.send_message.assert_awaited_once()
-        args, kwargs = inter.response.send_message.call_args
+        inter.response.defer.assert_awaited_once()
+        inter.followup.send.assert_awaited_once()
+        args, kwargs = inter.followup.send.call_args
         assert "Could not reach" in str(args[0])
-        assert kwargs.get("ephemeral") is True
 
 
 # ---------------------------------------------------------------------------
