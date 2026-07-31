@@ -27,8 +27,11 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+import httpx
+
 from bot.commands import build_commands
 from bot.config import BotConfig, load
+from bot.gatus_heartbeat import GatusHeartbeat, is_radio_healthy
 from bot.milestones import MilestoneAnnouncer, NowPlaying
 from bot.player import Player
 from bot.presence import Transition, VoiceEvent, should_pause, should_resume
@@ -355,6 +358,18 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
     state = BotState(db)
     provider = FileProviderClient(config.file_provider_base_url)
 
+    # Optional Gatus voice heartbeat — fully disabled unless both env vars are
+    # set, so other deployments run unchanged (see bot.gatus_heartbeat).
+    gatus_heartbeat: GatusHeartbeat | None = None
+    gatus_http: httpx.AsyncClient | None = None
+    if config.gatus_push_url and config.gatus_push_token:
+        gatus_heartbeat = GatusHeartbeat(
+            push_url=config.gatus_push_url,
+            push_token=config.gatus_push_token,
+            interval_seconds=config.gatus_push_interval_seconds,
+        )
+        gatus_http = httpx.AsyncClient(timeout=10.0)
+
     intents = discord.Intents.default()
     intents.voice_states = True
     intents.members = (
@@ -381,6 +396,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
     ready_done = False  # guard against on_ready firing more than once
     admin_paused = False  # manual dashboard pause; independent of listeners
     slash_commands_registered = False  # guard against double-registration on reconnect
+    gatus_task: asyncio.Task | None = None  # voice heartbeat; started in on_ready
 
     async def _handle_command(command: str, payload: dict | None) -> str:
         """Called by the scheduler's command loop for each pending row.
@@ -734,6 +750,19 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
         radio.init_from_state(float(state.playback_position_seconds), playing=not state.is_paused)
         scheduler.start()
 
+        # Gatus voice heartbeat: push voice-connection health so an external
+        # monitor (and its telegram alert) notices a dead voice link while the
+        # process stays up. Started after login, cancelled on shutdown.
+        nonlocal gatus_task
+        if gatus_heartbeat is not None and gatus_http is not None:
+            gatus_task = loop.create_task(
+                gatus_heartbeat.run(
+                    gatus_http,
+                    health_check=lambda: is_radio_healthy(stations),
+                ),
+                name="gatus-heartbeat",
+            )
+
         # Register slash commands once, then sync globally.
         nonlocal slash_commands_registered
         if not slash_commands_registered:
@@ -816,6 +845,10 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
         log.info("shutting down")
         with contextlib.suppress(Exception):
             scheduler.stop()
+        if gatus_task is not None:
+            gatus_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await gatus_task
         for st in stations.values():
             with contextlib.suppress(Exception):
                 await st.player.stop_hard()
@@ -823,6 +856,9 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 await st.voice_client.disconnect(force=True)  # type: ignore[attr-defined]
         with contextlib.suppress(Exception):
             await provider.aclose()
+        if gatus_http is not None:
+            with contextlib.suppress(Exception):
+                await gatus_http.aclose()
         with contextlib.suppress(Exception):
             db.close()
         with contextlib.suppress(Exception):

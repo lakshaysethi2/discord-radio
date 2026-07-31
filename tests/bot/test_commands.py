@@ -5,8 +5,7 @@ Uses fake/mock dependencies so no live Discord connection is required.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -14,7 +13,6 @@ from bot.commands import _fmt_duration, _watcher_count, build_commands
 from bot.state import BotState
 from db.database import Database
 from provider.client import TrackResponse
-
 
 # ---------------------------------------------------------------------------
 # Fake / stub helpers
@@ -182,7 +180,7 @@ class TestCurrentCommand:
         inter = _fake_interaction()
         await cb(inter)
         inter.response.send_message.assert_awaited_once()
-        args, kwargs = inter.response.send_message.call_args
+        args, _kwargs = inter.response.send_message.call_args
         assert "Nothing is playing" in str(args[0])
 
     async def test_shows_current_track_info(
@@ -281,7 +279,7 @@ class TestNextCommand:
         inter = _fake_interaction()
         await cb(inter)
         inter.response.send_message.assert_awaited_once()
-        args, kwargs = inter.response.send_message.call_args
+        args, _kwargs = inter.response.send_message.call_args
         assert "No active listeners" in str(args[0])
 
     async def test_skips_on_active_station(self, db: Database, state: BotState) -> None:

@@ -1,0 +1,154 @@
+"""Gatus voice-connection heartbeat for the Discord radio.
+
+The radio's silent failure mode is a dropped Discord *voice* connection while
+the process keeps running: the bot stays gateway-connected and logs nothing,
+but every listener join then raises "Not connected to voice". This module
+pushes the live voice-connection state to a Gatus external endpoint
+
+    POST {GATUS_PUSH_URL}/api/v1/endpoints/radio_discord-radio-voice/external?success={true|false}
+
+so Gatus (and its telegram alert) notices the drop immediately instead of
+waiting for its 60s heartbeat timeout.
+
+Push cadence is ``interval_seconds`` (default 30) — comfortably inside Gatus's
+60s window. On a healthy→unhealthy transition we push ``success=false`` once
+with a short error text so the alert fires immediately; on recovery we push
+``success=true`` right away and resume the regular cadence. Push failures are
+logged and swallowed — a failed push simply means no heartbeat arrives, which
+is exactly when the alert should fire.
+
+The feature is fully disabled unless ``GATUS_PUSH_URL`` and
+``GATUS_PUSH_TOKEN`` are set (see ``bot.config``); wiring in ``bot.main`` only
+starts the task when both are present.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, Protocol
+
+log = logging.getLogger(__name__)
+
+# Gatus derives the external-endpoint key from group "radio" + name
+# "discord-radio voice" (spaces -> dashes): radio_discord-radio-voice.
+# Keep this key exactly as the companion gatus-side config expects it.
+ENDPOINT_PATH = "/api/v1/endpoints/radio_discord-radio-voice/external"
+
+# Short error text shown in the Gatus alert when the voice link is down.
+UNHEALTHY_ERROR = "voice disconnected"
+
+
+class HeartbeatHttpClient(Protocol):
+    """Duck-typed surface: anything with an async ``post`` (httpx.AsyncClient…).
+
+    ``httpx.AsyncClient`` satisfies this structurally; tests inject fakes.
+    """
+
+    async def post(
+        self,
+        url: str,
+        *,
+        params: dict[str, str],
+        headers: dict[str, str],
+    ) -> Any: ...
+
+
+def is_radio_healthy(stations: Mapping[str, object]) -> bool:
+    """True when at least one live Station has a connected voice client.
+
+    ``stations`` is the authoritative per-guild structure built in
+    ``bot.main``: Station objects are registered only for *enabled* guilds
+    that successfully joined voice. A station whose Discord voice connection
+    has dropped silently stays in the dict — ``voice_client.is_connected()``
+    is what reveals the dead link, which is precisely the failure mode this
+    heartbeat exists to catch.
+    """
+    return any(st.voice_client.is_connected() for st in stations.values())
+
+
+class GatusHeartbeat:
+    """Pushes voice-connection health to the Gatus external endpoint."""
+
+    def __init__(
+        self,
+        *,
+        push_url: str,
+        push_token: str,
+        interval_seconds: int | float = 30,
+    ) -> None:
+        self.push_url = push_url.rstrip("/")
+        self.push_token = push_token
+        # Guard against a misconfigured 0/negative interval busy-looping.
+        self.interval_seconds = interval_seconds if interval_seconds > 0 else 1
+        self._headers = {"Authorization": f"Bearer {push_token}"}
+        self._previous_healthy: bool | None = None
+
+    async def push(
+        self,
+        client: HeartbeatHttpClient,
+        *,
+        success: bool,
+        error: str | None = None,
+    ) -> bool:
+        """POST one heartbeat. Never raises; returns whether the push landed."""
+        params: dict[str, str] = {"success": "true" if success else "false"}
+        if error:
+            params["error"] = error
+        try:
+            resp = await client.post(
+                f"{self.push_url}{ENDPOINT_PATH}",
+                params=params,
+                headers=self._headers,
+            )
+            resp.raise_for_status()
+            return True
+        except Exception as exc:
+            # A failed push just means no heartbeat arrives — exactly the
+            # condition Gatus alerts on. Log and move on, never raise.
+            log.warning("gatus heartbeat push failed: %s", exc)
+            return False
+
+    async def tick(self, client: HeartbeatHttpClient, *, is_healthy: bool) -> bool:
+        """Evaluate one health sample and push if the cadence demands it.
+
+        Healthy: push ``success=true`` (every tick — this is the regular
+        cadence Gatus measures). Unhealthy: push ``success=false`` once on the
+        transition (or first sample), then stay silent until recovery so Gatus
+        alerts via its heartbeat timeout rather than spamming the endpoint.
+        """
+        if is_healthy:
+            ok = await self.push(client, success=True)
+            self._previous_healthy = True
+            return ok
+        if self._previous_healthy is not False:
+            ok = await self.push(client, success=False, error=UNHEALTHY_ERROR)
+            self._previous_healthy = False
+            return ok
+        return True
+
+    async def run(
+        self,
+        client: HeartbeatHttpClient,
+        *,
+        health_check: Callable[[], bool],
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        """Background cadence loop; runs until cancelled.
+
+        ``health_check`` is invoked every ``interval_seconds`` and must return
+        the current radio health (e.g. a closure over ``bot.main``'s
+        authoritative ``stations`` dict). ``sleep`` is injectable for
+        deterministic tests.
+        """
+        try:
+            while True:
+                await sleep(self.interval_seconds)
+                try:
+                    is_healthy = bool(health_check())
+                    await self.tick(client, is_healthy=is_healthy)
+                except Exception:
+                    log.warning("gatus heartbeat tick failed", exc_info=True)
+        except asyncio.CancelledError:
+            pass
