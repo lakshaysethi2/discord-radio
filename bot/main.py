@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import signal
 import time
 from collections.abc import Awaitable, Callable
@@ -40,7 +41,7 @@ from bot.state import BotState, GuildScopedState
 from bot.tracker import SessionTracker
 from db import guilds as guilds_db
 from db.database import Database
-from provider.client import FileProviderClient, ProviderError
+from provider.client import FileProviderClient, ProviderError, TrackResponse
 
 log = logging.getLogger(__name__)
 
@@ -107,6 +108,17 @@ class RadioClock:
         self._base_offset = max(0.0, float(offset))
         self._playing = False
         self._started_at = None
+
+    def seek(self, target: float) -> None:
+        """Jump the cursor to an absolute ``target`` offset, preserving play state.
+
+        Unlike ``reset`` (which always freezes the clock), a *playing* clock
+        keeps ticking from the new offset and a *frozen* clock (paused radio)
+        stays frozen at the new offset. Used by the ``/forward`` command to
+        skip the shared radio ahead by a chosen number of minutes.
+        """
+        self._base_offset = max(0.0, float(target))
+        self._started_at = time.monotonic() if self._playing else None
 
     def pause(self) -> None:
         if self._playing:
@@ -187,6 +199,200 @@ def sync_radio_state(
     if not should_play:
         state.playback_position_seconds = int(radio.position())
     return should_play
+
+
+@dataclass
+class ForwardResult:
+    """Outcome of a ``/forward`` skip, ready to send as the interaction reply."""
+
+    message: str
+    ok: bool = False
+    new_position_seconds: int = 0
+    track_changed: bool = False
+
+
+# Upper bound on how many tracks one /forward skip may walk past. Guards
+# against a pathological provider.next() loop; if the cap is hit the remaining
+# overflow is left to the normal end-of-track advance instead of blocking the
+# command indefinitely.
+FORWARD_MAX_TRACKS = 100
+
+
+def _fmt_clock(seconds: float) -> str:
+    """Compact MM:SS / H:MM:SS clock string (e.g. 42:13) for confirmations."""
+    total = max(0, int(seconds))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def _fmt_minutes(minutes: float) -> str:
+    """Human-friendly minutes value (e.g. 5 -> "5 minutes", 1.5 -> "1.5 minutes")."""
+    if float(minutes).is_integer():
+        return f"{int(minutes)} minutes"
+    return f"{float(minutes):g} minutes"
+
+
+async def _fetch_next_ready_track(
+    provider: FileProviderClient,
+    *,
+    max_attempts: int = 10,
+    initial_backoff: float = 1.0,
+    max_backoff: float = 60.0,
+) -> TrackResponse | None:
+    """Advance the provider's playlist and fetch the next ready track.
+
+    Mirrors the retry/backoff loop used by the end-of-track advance
+    (``_advance_and_announce``). Returns ``None`` when the provider stays
+    unavailable so callers can fall back to existing behaviour instead of
+    erroring.
+    """
+    backoff = initial_backoff
+    for attempt in range(1, max_attempts + 1):
+        try:
+            cand = await provider.next()
+            if not cand.ready or not cand.local_path:
+                raise RuntimeError(f"track {cand.track_id} not ready")
+            return cand
+        except Exception as exc:
+            log.warning("advance attempt %d failed: %s", attempt, exc)
+            if attempt < max_attempts:
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
+    return None
+
+
+async def forward_radio(
+    *,
+    minutes: float,
+    provider: FileProviderClient,
+    state: BotState,
+    radio: RadioClock,
+    stations: dict[str, Station],
+    advance_lock: asyncio.Lock,
+    admin_paused: bool,
+) -> ForwardResult:
+    """Advance the shared radio clock forward by ``minutes`` minutes.
+
+    Backs the ``/forward`` slash command (see issue #15). The whole mutation
+    runs under ``advance_lock`` so it can never race a natural end-of-track
+    advance.
+
+    * In-track skips restart every listening station's player at the new
+      shared offset, so one listener's skip moves everyone (shared radio).
+    * If the skip window crosses the current track's end we follow the normal
+      end-of-track behaviour — ``provider.next()`` — carrying the overflow
+      into following tracks, so "skip forward N minutes" lands N minutes
+      ahead rather than just at the next track boundary. If the provider
+      won't give us a next track we park just before the end of the current
+      one and let the natural on-finish advance (with its own longer retry
+      budget) take over — never an error.
+    * While the radio is paused (admin pause) the clock advances and stays
+      frozen and stations are NOT restarted — the skip lands exactly where
+      the eventual resume picks it up.
+    * With nobody listening anywhere it's a friendly no-op: the shared radio
+      is not advanced in the background.
+    """
+    if not minutes or not math.isfinite(minutes) or minutes <= 0:
+        return ForwardResult(
+            ok=False, message="⚠️ `minutes` must be a positive number of minutes."
+        )
+    if not any(s.listener_count > 0 for s in stations.values()):
+        return ForwardResult(
+            ok=False, message="⏩ Nobody is listening right now — nothing to skip."
+        )
+
+    async with advance_lock:
+        track_id = state.current_track_id
+        if not track_id:
+            return ForwardResult(ok=False, message="🎙️ Nothing is playing right now.")
+        try:
+            track = await provider.get_by_id(track_id)
+        except Exception as exc:
+            log.warning("forward: could not fetch track %s: %s", track_id, exc)
+            return ForwardResult(
+                ok=False, message="⚠️ Could not reach the file provider. Try again in a moment."
+            )
+        if not track.ready or not track.local_path:
+            return ForwardResult(
+                ok=False, message="⚠️ That track isn't ready yet — try again in a moment."
+            )
+
+        seconds = float(minutes) * 60.0
+        target = radio.position() + seconds
+
+        # Walk past every track the skip window fully covers, carrying the
+        # overflow so the final position lands `minutes` ahead of where the
+        # radio was — not just at the next track boundary.
+        final_track = track
+        final_offset = target
+        initial_track_id = track.track_id
+        for _ in range(FORWARD_MAX_TRACKS):
+            if final_track.duration_seconds <= 0 or final_offset < final_track.duration_seconds:
+                break
+            # This track ends inside the skip window — mark it done and move
+            # on, exactly like a natural end-of-track advance.
+            with contextlib.suppress(Exception):
+                await provider.mark_played(final_track.track_id)
+            final_offset -= final_track.duration_seconds
+            nxt = await _fetch_next_ready_track(
+                provider, max_attempts=3, initial_backoff=0.5, max_backoff=2.0
+            )
+            if nxt is None:
+                # Provider is struggling — park just before the end of the
+                # current track; the normal on-finish advance takes over.
+                final_offset = max(0.0, float(final_track.duration_seconds) - 1.0)
+                break
+            final_track = nxt
+
+        # Defensive clamp: if the walk hit FORWARD_MAX_TRACKS (or track
+        # durations changed mid-walk) and the overflow still overshoots, park
+        # just before the end and let the natural on-finish advance continue.
+        if final_track.duration_seconds > 0 and final_offset >= final_track.duration_seconds:
+            final_offset = max(0.0, float(final_track.duration_seconds) - 1.0)
+
+        # Land the shared cursor at the new position, preserving play/pause.
+        radio.seek(final_offset)
+        state.playback_position_seconds = int(final_offset)
+        state.current_track_id = final_track.track_id
+        state.playlist_position = final_track.playlist_position
+        track_changed = final_track.track_id != initial_track_id
+
+        # Reconcile the effective radio state: keeps the clock frozen while an
+        # admin pause is in effect, ticking otherwise (no-op when unchanged).
+        sync_radio_state(stations, radio, state, admin_paused=admin_paused)
+
+        if radio.is_playing():
+            # Restart every live station at the new shared position so they
+            # all hear the same offset.
+            for st in stations.values():
+                if st.listener_count <= 0:
+                    continue
+                try:
+                    await st.player.start(final_track, seek_seconds=final_offset)
+                except Exception as exc:
+                    log.warning("station %s forward restart failed: %s", st.guild_id, exc)
+        if track_changed:
+            # Keep Now Playing embeds truthful when the skip crossed tracks.
+            for st in stations.values():
+                with contextlib.suppress(Exception):
+                    await st.now_playing.post_or_replace(final_track)
+
+        paused = not radio.is_playing()
+        message = (
+            f"⏩ Skipped forward {_fmt_minutes(float(minutes))} — "
+            f"now at {_fmt_clock(final_offset)}"
+            + (f" on **{final_track.title}**" if track_changed else "")
+            + (", radio is paused." if paused else ".")
+        )
+        return ForwardResult(
+            ok=True,
+            message=message,
+            new_position_seconds=int(final_offset),
+            track_changed=track_changed,
+        )
 
 
 async def apply_server_config(
@@ -507,6 +713,22 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             return f"ok:playing:{track_id}"
         return f"error: unknown command {command!r}"
 
+    async def _forward_radio(minutes: float) -> ForwardResult:
+        """Slash-command hook for /forward — see forward_radio().
+
+        Wraps the module-level core with the live ``admin_paused`` flag and the
+        shared ``_advance_lock`` from this bot instance.
+        """
+        return await forward_radio(
+            minutes=minutes,
+            provider=provider,
+            state=state,
+            radio=radio,
+            stations=stations,
+            advance_lock=_advance_lock,
+            admin_paused=admin_paused,
+        )
+
     async def _build_station(guild, cfg) -> Station | None:
         """Connect to a guild's configured voice channel and build a Station.
 
@@ -770,7 +992,12 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
         if not slash_commands_registered:
             slash_commands_registered = True
             for name, desc, cb in build_commands(
-                db=db, provider=provider, state=state, radio=radio, stations=stations
+                db=db,
+                provider=provider,
+                state=state,
+                radio=radio,
+                stations=stations,
+                forward_radio=_forward_radio,
             ):
                 tree.command(name=name, description=desc)(cb)
             try:
