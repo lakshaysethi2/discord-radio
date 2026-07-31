@@ -1,0 +1,95 @@
+# -----------------------------------------------------------------------------
+# CI — lint + full test suite on a SELF-HOSTED laptop runner (label: e2e)
+#
+# Runs on the captain's laptop, never on GitHub-hosted runners, so the VPS
+# never pays for CI minutes. The laptop runner is switched on only when the
+# captain wants jobs to run; while it is offline, GitHub queues jobs for the
+# `self-hosted` + `e2e` labels and picks them up when the runner registers —
+# nothing to configure here.
+#
+# SECURITY — fork guard (MANDATORY): this repository is PUBLIC. A fork's
+# pull_request can carry arbitrary attacker-controlled code, and
+# `actions/checkout` would happily check it out. Self-hosted runners are
+# long-lived machines with real credentials, so fork-PR code must NEVER be
+# checked out or executed here. The very first step therefore exits 0 with a
+# "skipped for fork PR" notice before any checkout runs, and every following
+# step is gated on that guard.
+# -----------------------------------------------------------------------------
+
+name: CI
+
+on:
+  push:
+    branches: [prod]
+  pull_request:
+    branches: [prod]
+
+# No secrets and no write access are needed: checkout (contents read) and
+# artifact upload (run-scoped runtime token) are all this workflow does.
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: lint + tests (self-hosted e2e)
+    runs-on: [self-hosted, e2e]
+
+    steps:
+      # --- Fork-PR security guard --------------------------------------------
+      # Must stay the FIRST step, above the checkout, and every step below
+      # must keep the `steps.fork-guard.outputs.skip != 'true'` condition.
+      - name: Guard — skip fork PRs (self-hosted runner never runs fork code)
+        id: fork-guard
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true
+        run: |
+          echo "::notice title=CI skipped for fork PR::Skipped for fork PR — this repository is public; self-hosted runners never execute fork-PR code. Job body skipped (exit 0) before any checkout. Head repo: '${{ github.event.pull_request.head.repo.full_name }}'."
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+
+      # --- Everything below never runs on a fork PR --------------------------
+      - name: Checkout
+        if: steps.fork-guard.outputs.skip != 'true'
+        uses: actions/checkout@v4
+
+      # pyproject requires Python >=3.11; prod image (Dockerfile) uses 3.12 —
+      # match prod. setup-python installs a standalone interpreter, so the
+      # laptop's OS python (and PEP 668 restrictions) is never touched.
+      - name: Set up Python 3.12
+        if: steps.fork-guard.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            file_provider/requirements.txt
+
+      # Same dependency set the test container installs (see Dockerfile) —
+      # plain pip, no Docker.
+      - name: Install dependencies
+        if: steps.fork-guard.outputs.skip != 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r file_provider/requirements.txt
+
+      # Mirrors `make lint` exactly.
+      - name: Ruff lint + format check
+        if: steps.fork-guard.outputs.skip != 'true'
+        run: |
+          python -m ruff check .
+          python -m ruff format --check .
+
+      # Mirrors `make test` (test container command `python -m pytest -q`;
+      # pyproject testpaths = ["tests"] — same full-suite scope, plus a
+      # JUnit-style report for the summary artifact).
+      - name: Pytest — full suite
+        if: steps.fork-guard.outputs.skip != 'true'
+        run: python -m pytest -q --junitxml=junit.xml
+
+      - name: Upload JUnit-style summary
+        if: always() && steps.fork-guard.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-report
+          path: junit.xml
+          if-no-files-found: warn
