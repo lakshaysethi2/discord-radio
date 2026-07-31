@@ -133,7 +133,7 @@ class TestWatcherCount:
 # ---------------------------------------------------------------------------
 
 class TestBuildCommands:
-    def test_returns_three_commands(self, db: Database, state: BotState) -> None:
+    def test_returns_four_commands(self, db: Database, state: BotState) -> None:
         cmds = build_commands(
             db=db,
             provider=FakeProvider(),  # type: ignore[arg-type]
@@ -144,8 +144,9 @@ class TestBuildCommands:
         names = [name for name, _, _ in cmds]
         assert "current" in names
         assert "next" in names
+        assert "forward" in names
         assert "leaderboard" in names
-        assert len(names) == 3
+        assert len(names) == 4
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +331,108 @@ class TestNextCommand:
         station.player.skip.assert_not_awaited()
         args, _ = inter.response.send_message.call_args
         assert "No active listeners" in str(args[0])
+
+
+# ---------------------------------------------------------------------------
+# /forward
+# ---------------------------------------------------------------------------
+
+class TestForwardCommand:
+    def _get_forward(self, cmds):
+        for _, _, cb in cmds:
+            if cb.__name__ == "forward_command":
+                return cb
+        raise LookupError("forward_command not found")
+
+    async def test_forwards_minutes_and_sends_confirmation(
+        self, db: Database, state: BotState
+    ) -> None:
+        from bot.main import ForwardResult
+
+        seen: list[float] = []
+
+        async def fake_forward(minutes: float) -> ForwardResult:
+            seen.append(minutes)
+            return ForwardResult(
+                ok=True,
+                message="⏩ Skipped forward 5 minutes — now at 42:13.",
+                new_position_seconds=2533,
+            )
+
+        cmds = build_commands(
+            db=db,
+            provider=FakeProvider(),
+            state=state,
+            radio=FakeRadioClock(),
+            stations={},
+            forward_radio=fake_forward,
+        )
+        cb = self._get_forward(cmds)
+        inter = _fake_interaction()
+        await cb(inter, minutes=5.0)
+        assert seen == [5.0]
+        inter.response.send_message.assert_awaited_once()
+        args, _kwargs = inter.response.send_message.call_args
+        assert "Skipped forward 5 minutes" in str(args[0])
+
+    async def test_fractional_minutes_passed_through(self, db: Database, state: BotState) -> None:
+        from bot.main import ForwardResult
+
+        seen: list[float] = []
+
+        async def fake_forward(minutes: float) -> ForwardResult:
+            seen.append(minutes)
+            return ForwardResult(ok=True, message="ok")
+
+        cmds = build_commands(
+            db=db,
+            provider=FakeProvider(),
+            state=state,
+            radio=FakeRadioClock(),
+            stations={},
+            forward_radio=fake_forward,
+        )
+        cb = self._get_forward(cmds)
+        await cb(_fake_interaction(), minutes=1.5)
+        assert seen == [1.5]
+
+    async def test_responds_with_result_message_even_when_rejected(
+        self, db: Database, state: BotState
+    ) -> None:
+        from bot.main import ForwardResult
+
+        async def fake_forward(minutes: float) -> ForwardResult:
+            return ForwardResult(ok=False, message="⚠️ `minutes` must be a positive number.")
+
+        cmds = build_commands(
+            db=db,
+            provider=FakeProvider(),
+            state=state,
+            radio=FakeRadioClock(),
+            stations={},
+            forward_radio=fake_forward,
+        )
+        cb = self._get_forward(cmds)
+        inter = _fake_interaction()
+        await cb(inter, minutes=0.0)
+        args, _kwargs = inter.response.send_message.call_args
+        assert "must be a positive number" in str(args[0])
+
+    async def test_unavailable_when_no_forward_radio(self, db: Database, state: BotState) -> None:
+        cmds = build_commands(
+            db=db,
+            provider=FakeProvider(),
+            state=state,
+            radio=FakeRadioClock(),
+            stations={},
+        )
+        cb = self._get_forward(cmds)
+        inter = _fake_interaction()
+        await cb(inter, minutes=5.0)
+        inter.response.send_message.assert_awaited_once()
+        args, kwargs = inter.response.send_message.call_args
+        assert "not available" in str(args[0])
+        assert kwargs.get("ephemeral") is True
 
 
 # ---------------------------------------------------------------------------
