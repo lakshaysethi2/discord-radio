@@ -547,7 +547,9 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             db=db,
             guild_id=cfg.guild_id,
         )
-        announcer = MilestoneAnnouncer(client=client, text_channel_id=tc_id, db=db)
+        announcer = MilestoneAnnouncer(
+            client=client, text_channel_id=tc_id, db=db, guild_id=cfg.guild_id
+        )
         station = Station(
             guild_id=cfg.guild_id,
             guild_name=cfg.guild_name or guild.name,
