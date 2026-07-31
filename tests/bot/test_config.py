@@ -23,6 +23,20 @@ class TestLoad:
         assert cfg.checkpoint_interval_seconds == 3600
         assert cfg.file_provider_base_url == "http://file-provider:8001"
 
+    def test_gatus_fields_default_and_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        cfg = config.load()
+        assert cfg.gatus_push_url == ""
+        assert cfg.gatus_push_token == ""
+        assert cfg.gatus_push_interval_seconds == 30
+        monkeypatch.setenv("GATUS_PUSH_URL", "https://gatus.lak.nz")
+        monkeypatch.setenv("GATUS_PUSH_TOKEN", "secret")
+        monkeypatch.setenv("GATUS_PUSH_INTERVAL_SECONDS", "45")
+        cfg = config.load()
+        assert cfg.gatus_push_url == "https://gatus.lak.nz"
+        assert cfg.gatus_push_token == "secret"
+        assert cfg.gatus_push_interval_seconds == 45
+
     def test_missing_required_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
         monkeypatch.setenv("DISCORD_GUILD_ID", "1")

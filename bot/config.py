@@ -59,6 +59,10 @@ class BotConfig:
     min_session_seconds: int = 30
     checkpoint_interval_seconds: int = 3600
     admin_user_ids: frozenset[str] = field(default_factory=frozenset)
+    # Gatus voice heartbeat — disabled entirely unless both push vars are set.
+    gatus_push_url: str = ""
+    gatus_push_token: str = ""
+    gatus_push_interval_seconds: int = 30
 
 
 def load() -> BotConfig:
@@ -72,4 +76,7 @@ def load() -> BotConfig:
         min_session_seconds=_env_int("MIN_SESSION_SECONDS", 30),
         checkpoint_interval_seconds=_env_int("CHECKPOINT_INTERVAL_SECONDS", 3600),
         admin_user_ids=_env_id_list("ADMIN_USER_IDS"),
+        gatus_push_url=_env("GATUS_PUSH_URL"),
+        gatus_push_token=_env("GATUS_PUSH_TOKEN"),
+        gatus_push_interval_seconds=_env_int("GATUS_PUSH_INTERVAL_SECONDS", 30),
     )
