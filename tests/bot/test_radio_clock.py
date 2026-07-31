@@ -186,6 +186,48 @@ def test_radio_clock_reset_is_frozen(monkeypatch) -> None:
     assert rc.position() == 0.0  # still frozen at 0
 
 
+def test_radio_clock_seek_keeps_playing_clock_ticking(monkeypatch) -> None:
+    """/forward while playing: seek jumps the cursor and it keeps ticking."""
+    seq = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: seq[0])
+    rc = RadioClock()
+    rc.start(50.0)
+    seq[0] = 1010.0  # 10s in -> position 60
+    assert rc.position() == 60.0
+
+    rc.seek(220.0)  # skip forward 160s
+    assert rc.position() == 220.0
+    assert rc.is_playing() is True
+
+    seq[0] = 1015.0  # 5s pass after the seek
+    assert rc.position() == 225.0  # keeps ticking from the new offset
+
+
+def test_radio_clock_seek_keeps_frozen_clock_frozen(monkeypatch) -> None:
+    """/forward while paused: seek moves the frozen cursor, stays paused."""
+    seq = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: seq[0])
+    rc = RadioClock()
+    rc.init_from_state(100.0, playing=False)
+    assert rc.is_playing() is False
+
+    rc.seek(220.0)
+    assert rc.position() == 220.0
+    assert rc.is_playing() is False
+
+    seq[0] = 1660.0  # time passes while paused
+    assert rc.position() == 220.0  # still frozen at the seek target
+
+
+def test_radio_clock_seek_clamps_negative_target(monkeypatch) -> None:
+    seq = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: seq[0])
+    rc = RadioClock()
+    rc.init_from_state(10.0, playing=False)
+    rc.seek(-5.0)
+    assert rc.position() == 0.0
+
+
 async def test_play_track_with_no_listeners_freezes_clock_at_zero(monkeypatch) -> None:
     """Regression (2nd review, high): selecting a track from the dashboard
     while nobody is listening must NOT start the shared RadioClock. The clock

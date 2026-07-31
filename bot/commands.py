@@ -55,10 +55,15 @@ def build_commands(
     state: BotState,
     radio: Any,  # RadioClock
     stations: dict[str, Any],
+    forward_radio: Any | None = None,  # async (minutes: float) -> ForwardResult
 ) -> list[tuple[str, str, Any]]:
     """Return (name, description, callback) tuples for slash-command registration.
 
     The callbacks are async functions that accept a ``discord.Interaction``.
+
+    ``forward_radio`` is the live /forward implementation injected by the bot
+    (it needs the shared advance lock and admin-pause flag, which only exist
+    inside ``run()``); when None the command replies that it's unavailable.
     """
 
     async def current_command(interaction) -> None:
@@ -154,8 +159,29 @@ def build_commands(
 
         await interaction.response.send_message("⏭️ Skipping to the next track…")
 
+    async def forward_command(interaction, minutes: float) -> None:
+        """Handle /forward — skip the shared radio ahead by N minutes.
+
+        Available to everyone: the radio is shared, so one listener's skip
+        moves everyone. The heavy lifting (position math, track-boundary
+        clamping, pause handling) lives in bot.main.forward_radio, injected by
+        the bot so it can use the shared advance lock.
+
+        Parameters
+        ----------
+          minutes: Positive number of minutes to skip ahead.
+        """
+        if forward_radio is None:
+            await interaction.response.send_message(
+                "⚠️ /forward is not available right now.", ephemeral=True
+            )
+            return
+        result = await forward_radio(minutes=float(minutes))
+        await interaction.response.send_message(result.message)
+
     return [
         ("current", "Show the currently playing track", current_command),
         ("next", "Skip to the next track in the queue", next_command),
+        ("forward", "Skip the radio forward by N minutes", forward_command),
         ("leaderboard", "Show listening time leaderboard", leaderboard_command),
     ]
