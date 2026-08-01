@@ -144,7 +144,7 @@ class TestBuildCommands:
         names = [name for name, _, _ in cmds]
         assert "current" in names
         assert "next" in names
-        assert "backward" in names
+        assert "rewind" in names
         assert "forward" in names
         assert "leaderboard" in names
         assert len(names) == 5
@@ -437,28 +437,28 @@ class TestForwardCommand:
 
 
 # ---------------------------------------------------------------------------
-# /backward
+# /rewind
 # ---------------------------------------------------------------------------
 
-class TestBackwardCommand:
-    def _get_backward(self, cmds):
+class TestRewindCommand:
+    def _get_rewind(self, cmds):
         for _, _, cb in cmds:
-            if cb.__name__ == "backward_command":
+            if cb.__name__ == "rewind_command":
                 return cb
-        raise LookupError("backward_command not found")
+        raise LookupError("rewind_command not found")
 
-    async def test_backs_minutes_and_sends_confirmation(
+    async def test_rewinds_minutes_and_sends_confirmation(
         self, db: Database, state: BotState
     ) -> None:
-        from bot.main import BackwardResult
+        from bot.main import RewindResult
 
         seen: list[float] = []
 
-        async def fake_backward(minutes: float) -> BackwardResult:
+        async def fake_rewind(minutes: float) -> RewindResult:
             seen.append(minutes)
-            return BackwardResult(
+            return RewindResult(
                 ok=True,
-                message="⏪ Skipped back 5 minutes — now at 42:13.",
+                message="⏪ Rewound 5 minutes — now at 42:13.",
                 new_position_seconds=2533,
             )
 
@@ -468,24 +468,24 @@ class TestBackwardCommand:
             state=state,
             radio=FakeRadioClock(),
             stations={},
-            backward_radio=fake_backward,
+            rewind_radio=fake_rewind,
         )
-        cb = self._get_backward(cmds)
+        cb = self._get_rewind(cmds)
         inter = _fake_interaction()
         await cb(inter, minutes=5.0)
         assert seen == [5.0]
         inter.response.send_message.assert_awaited_once()
         args, _kwargs = inter.response.send_message.call_args
-        assert "Skipped back 5 minutes" in str(args[0])
+        assert "Rewound 5 minutes" in str(args[0])
 
     async def test_fractional_minutes_passed_through(self, db: Database, state: BotState) -> None:
-        from bot.main import BackwardResult
+        from bot.main import RewindResult
 
         seen: list[float] = []
 
-        async def fake_backward(minutes: float) -> BackwardResult:
+        async def fake_rewind(minutes: float) -> RewindResult:
             seen.append(minutes)
-            return BackwardResult(ok=True, message="ok")
+            return RewindResult(ok=True, message="ok")
 
         cmds = build_commands(
             db=db,
@@ -493,19 +493,19 @@ class TestBackwardCommand:
             state=state,
             radio=FakeRadioClock(),
             stations={},
-            backward_radio=fake_backward,
+            rewind_radio=fake_rewind,
         )
-        cb = self._get_backward(cmds)
+        cb = self._get_rewind(cmds)
         await cb(_fake_interaction(), minutes=1.5)
         assert seen == [1.5]
 
     async def test_responds_with_result_message_even_when_rejected(
         self, db: Database, state: BotState
     ) -> None:
-        from bot.main import BackwardResult
+        from bot.main import RewindResult
 
-        async def fake_backward(minutes: float) -> BackwardResult:
-            return BackwardResult(ok=False, message="⚠️ `minutes` must be a positive number.")
+        async def fake_rewind(minutes: float) -> RewindResult:
+            return RewindResult(ok=False, message="⚠️ `minutes` must be a positive number.")
 
         cmds = build_commands(
             db=db,
@@ -513,15 +513,15 @@ class TestBackwardCommand:
             state=state,
             radio=FakeRadioClock(),
             stations={},
-            backward_radio=fake_backward,
+            rewind_radio=fake_rewind,
         )
-        cb = self._get_backward(cmds)
+        cb = self._get_rewind(cmds)
         inter = _fake_interaction()
         await cb(inter, minutes=0.0)
         args, _kwargs = inter.response.send_message.call_args
         assert "must be a positive number" in str(args[0])
 
-    async def test_unavailable_when_no_backward_radio(self, db: Database, state: BotState) -> None:
+    async def test_unavailable_when_no_rewind_radio(self, db: Database, state: BotState) -> None:
         cmds = build_commands(
             db=db,
             provider=FakeProvider(),
@@ -529,7 +529,7 @@ class TestBackwardCommand:
             radio=FakeRadioClock(),
             stations={},
         )
-        cb = self._get_backward(cmds)
+        cb = self._get_rewind(cmds)
         inter = _fake_interaction()
         await cb(inter, minutes=5.0)
         inter.response.send_message.assert_awaited_once()

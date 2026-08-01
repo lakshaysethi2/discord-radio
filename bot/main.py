@@ -212,8 +212,8 @@ class ForwardResult:
 
 
 @dataclass
-class BackwardResult:
-    """Outcome of a ``/backward`` skip, ready to send as the interaction reply."""
+class RewindResult:
+    """Outcome of a ``/rewind`` skip, ready to send as the interaction reply."""
 
     message: str
     ok: bool = False
@@ -405,7 +405,7 @@ async def forward_radio(
         )
 
 
-async def backward_radio(
+async def rewind_radio(
     *,
     minutes: float,
     provider: FileProviderClient,
@@ -414,10 +414,10 @@ async def backward_radio(
     stations: dict[str, Station],
     advance_lock: asyncio.Lock,
     admin_paused: bool,
-) -> BackwardResult:
+) -> RewindResult:
     """Rewind the shared radio clock backward by ``minutes`` minutes.
 
-    Backs the ``/backward`` slash command — the exact mirror of ``/forward``.
+    Backs the ``/rewind`` slash command — the exact mirror of ``/forward``.
     The whole mutation runs under ``advance_lock`` so it can never race a
     natural end-of-track advance.
 
@@ -434,27 +434,27 @@ async def backward_radio(
       is not rewound in the background.
     """
     if not minutes or not math.isfinite(minutes) or minutes <= 0:
-        return BackwardResult(
+        return RewindResult(
             ok=False, message="⚠️ `minutes` must be a positive number of minutes."
         )
     if not any(s.listener_count > 0 for s in stations.values()):
-        return BackwardResult(
+        return RewindResult(
             ok=False, message="⏪ Nobody is listening right now — nothing to skip."
         )
 
     async with advance_lock:
         track_id = state.current_track_id
         if not track_id:
-            return BackwardResult(ok=False, message="🎙️ Nothing is playing right now.")
+            return RewindResult(ok=False, message="🎙️ Nothing is playing right now.")
         try:
             track = await provider.get_by_id(track_id)
         except Exception as exc:
-            log.warning("backward: could not fetch track %s: %s", track_id, exc)
-            return BackwardResult(
+            log.warning("rewind: could not fetch track %s: %s", track_id, exc)
+            return RewindResult(
                 ok=False, message="⚠️ Could not reach the file provider. Try again in a moment."
             )
         if not track.ready or not track.local_path:
-            return BackwardResult(
+            return RewindResult(
                 ok=False, message="⚠️ That track isn't ready yet — try again in a moment."
             )
 
@@ -481,15 +481,15 @@ async def backward_radio(
                 try:
                     await st.player.start(track, seek_seconds=final_offset)
                 except Exception as exc:
-                    log.warning("station %s backward restart failed: %s", st.guild_id, exc)
+                    log.warning("station %s rewind restart failed: %s", st.guild_id, exc)
 
         paused = not radio.is_playing()
         message = (
-            f"⏪ Skipped back {_fmt_minutes(float(minutes))} — "
+            f"⏪ Rewound {_fmt_minutes(float(minutes))} — "
             f"now at {_fmt_clock(final_offset)}"
             + (", radio is paused." if paused else ".")
         )
-        return BackwardResult(
+        return RewindResult(
             ok=True,
             message=message,
             new_position_seconds=int(final_offset),
@@ -831,13 +831,13 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             admin_paused=admin_paused,
         )
 
-    async def _backward_radio(minutes: float) -> BackwardResult:
-        """Slash-command hook for /backward — see backward_radio().
+    async def _rewind_radio(minutes: float) -> RewindResult:
+        """Slash-command hook for /rewind — see rewind_radio().
 
         Wraps the module-level core with the live ``admin_paused`` flag and the
         shared ``_advance_lock`` from this bot instance.
         """
-        return await backward_radio(
+        return await rewind_radio(
             minutes=minutes,
             provider=provider,
             state=state,
@@ -1116,7 +1116,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 radio=radio,
                 stations=stations,
                 forward_radio=_forward_radio,
-                backward_radio=_backward_radio,
+                rewind_radio=_rewind_radio,
             ):
                 tree.command(name=name, description=desc)(cb)
             try:
