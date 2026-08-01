@@ -1,4 +1,4 @@
-"""Tests for bot.main.backward_radio — the /backward slash-command core.
+"""Tests for bot.main.rewind_radio — the /rewind slash-command core.
 
 Uses fake stations/players/provider + a real RadioClock (monkeypatched
 monotonic) so the shared-clock maths, the clamp-at-start-of-track edge,
@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from bot.main import RadioClock, backward_radio
+from bot.main import RadioClock, rewind_radio
 from bot.state import BotState
 from provider.client import ProviderError, TrackResponse
 
@@ -116,7 +116,7 @@ def _stations(*counts: int) -> dict[str, FakeStation]:
 # ---------------------------------------------------------------------------
 
 
-class TestBackwardRejections:
+class TestRewindRejections:
     async def test_rejects_zero_minutes(
         self, state: BotState, monotonic, monkeypatch
     ) -> None:
@@ -125,7 +125,7 @@ class TestBackwardRejections:
         provider = FakeProvider(tracks={"t1": make_track()})
         state.current_track_id = "t1"
         stations = _stations(1)
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=0,
             provider=provider,  # type: ignore[arg-type]
             state=state,
@@ -146,7 +146,7 @@ class TestBackwardRejections:
         radio = _radio(playing=True, offset=100.0)
         provider = FakeProvider(tracks={"t1": make_track()})
         state.current_track_id = "t1"
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=-3,
             provider=provider,  # type: ignore[arg-type]
             state=state,
@@ -164,7 +164,7 @@ class TestBackwardRejections:
         monkeypatch.setattr(asyncio, "sleep", _no_sleep)
         radio = _radio(playing=True, offset=100.0)
         state.current_track_id = "t1"
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=float("nan"),
             provider=FakeProvider(tracks={"t1": make_track()}),  # type: ignore[arg-type]
             state=state,
@@ -184,7 +184,7 @@ class TestBackwardRejections:
         provider = FakeProvider(tracks={"t1": make_track()})
         state.current_track_id = "t1"
         state.playback_position_seconds = 100
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=5,
             provider=provider,  # type: ignore[arg-type]
             state=state,
@@ -208,7 +208,7 @@ class TestBackwardRejections:
         radio = _radio(playing=False, offset=100.0)
         provider = FakeProvider(tracks={"t1": make_track()})
         state.current_track_id = "t1"
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=5,
             provider=provider,  # type: ignore[arg-type]
             state=state,
@@ -225,7 +225,7 @@ class TestBackwardRejections:
         monkeypatch.setattr(asyncio, "sleep", _no_sleep)
         radio = _radio(playing=True, offset=100.0)
         state.current_track_id = None
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=5,
             provider=FakeProvider(),  # type: ignore[arg-type]
             state=state,
@@ -245,7 +245,7 @@ class TestBackwardRejections:
         radio = _radio(playing=True, offset=100.0)
         provider = FakeProvider(tracks={"t1": ProviderError("down")})
         state.current_track_id = "t1"
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=5,
             provider=provider,  # type: ignore[arg-type]
             state=state,
@@ -265,7 +265,7 @@ class TestBackwardRejections:
         radio = _radio(playing=True, offset=100.0)
         provider = FakeProvider(tracks={"t1": make_track(ready=False, local_path="")})
         state.current_track_id = "t1"
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=5,
             provider=provider,  # type: ignore[arg-type]
             state=state,
@@ -283,7 +283,7 @@ class TestBackwardRejections:
 # ---------------------------------------------------------------------------
 
 
-class TestBackwardInTrack:
+class TestRewindInTrack:
     async def test_seeks_within_current_track(
         self, state: BotState, monotonic, monkeypatch
     ) -> None:
@@ -294,7 +294,7 @@ class TestBackwardInTrack:
         state.current_track_id = "t1"
         stations = _stations(1)
 
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=2,  # -120s -> 180
             provider=provider,  # type: ignore[arg-type]
             state=state,
@@ -323,7 +323,7 @@ class TestBackwardInTrack:
         radio = _radio(playing=True, offset=300.0)
         provider = FakeProvider(tracks={"t1": make_track(duration_seconds=600)})
         state.current_track_id = "t1"
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=1.5,  # -90s -> 210
             provider=provider,  # type: ignore[arg-type]
             state=state,
@@ -334,7 +334,7 @@ class TestBackwardInTrack:
         )
         assert result.ok is True
         assert result.new_position_seconds == 210
-        assert "Skipped back 1.5 minutes" in result.message
+        assert "Rewound 1.5 minutes" in result.message
         assert "now at 3:30" in result.message
 
     async def test_skips_stations_without_listeners(
@@ -347,7 +347,7 @@ class TestBackwardInTrack:
         state.current_track_id = "t1"
         stations = _stations(1, 0)  # second guild has no listeners
 
-        await backward_radio(
+        await rewind_radio(
             minutes=2,
             provider=provider,  # type: ignore[arg-type]
             state=state,
@@ -369,7 +369,7 @@ class TestBackwardInTrack:
         provider = FakeProvider(tracks={"t1": track})
         state.current_track_id = "t1"
 
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=2,  # -120s -> exactly 0
             provider=provider,  # type: ignore[arg-type]
             state=state,
@@ -392,7 +392,7 @@ class TestBackwardInTrack:
 # ---------------------------------------------------------------------------
 
 
-class TestBackwardClampAtStart:
+class TestRewindClampAtStart:
     async def test_clamps_at_start_when_rewind_exceeds_position(
         self, state: BotState, monotonic, monkeypatch
     ) -> None:
@@ -406,7 +406,7 @@ class TestBackwardClampAtStart:
         state.current_track_id = "t1"
         stations = _stations(1)
 
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=5,  # -300s -> target -240 -> clamped to 0
             provider=provider,  # type: ignore[arg-type]
             state=state,
@@ -443,7 +443,7 @@ class TestBackwardClampAtStart:
         state.current_track_id = "t1"
         stations = _stations(1)
 
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=60,  # -3600s -> clamped to 0
             provider=provider,  # type: ignore[arg-type]
             state=state,
@@ -469,7 +469,7 @@ class TestBackwardClampAtStart:
 # ---------------------------------------------------------------------------
 
 
-class TestBackwardWhilePaused:
+class TestRewindWhilePaused:
     async def test_rewinds_clock_but_stays_paused(
         self, state: BotState, monotonic, monkeypatch
     ) -> None:
@@ -484,7 +484,7 @@ class TestBackwardWhilePaused:
         stations = _stations(1)
         state.is_paused = True
 
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=2,  # -120s -> 180
             provider=provider,  # type: ignore[arg-type]
             state=state,
@@ -513,7 +513,7 @@ class TestBackwardWhilePaused:
         state.current_track_id = "t1"
         stations = _stations(1)
 
-        result = await backward_radio(
+        result = await rewind_radio(
             minutes=5,  # -300s -> clamped to 0
             provider=provider,  # type: ignore[arg-type]
             state=state,
@@ -536,7 +536,7 @@ class TestBackwardWhilePaused:
 # ---------------------------------------------------------------------------
 
 
-class TestBackwardLocking:
+class TestRewindLocking:
     async def test_uses_the_shared_advance_lock(
         self, state: BotState, monotonic, monkeypatch
     ) -> None:
@@ -549,9 +549,9 @@ class TestBackwardLocking:
         state.current_track_id = "t1"
 
         lock = asyncio.Lock()
-        await lock.acquire()  # hold the lock: backward must block, not proceed
+        await lock.acquire()  # hold the lock: rewind must block, not proceed
         result_future = asyncio.ensure_future(
-            backward_radio(
+            rewind_radio(
                 minutes=2,
                 provider=provider,  # type: ignore[arg-type]
                 state=state,
