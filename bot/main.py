@@ -211,6 +211,16 @@ class ForwardResult:
     track_changed: bool = False
 
 
+@dataclass
+class BackwardResult:
+    """Outcome of a ``/backward`` skip, ready to send as the interaction reply."""
+
+    message: str
+    ok: bool = False
+    new_position_seconds: int = 0
+    track_changed: bool = False
+
+
 # Upper bound on how many tracks one /forward skip may walk past. Guards
 # against a pathological provider.next() loop; if the cap is hit the remaining
 # overflow is left to the normal end-of-track advance instead of blocking the
@@ -392,6 +402,98 @@ async def forward_radio(
             message=message,
             new_position_seconds=int(final_offset),
             track_changed=track_changed,
+        )
+
+
+async def backward_radio(
+    *,
+    minutes: float,
+    provider: FileProviderClient,
+    state: BotState,
+    radio: RadioClock,
+    stations: dict[str, Station],
+    advance_lock: asyncio.Lock,
+    admin_paused: bool,
+) -> BackwardResult:
+    """Rewind the shared radio clock backward by ``minutes`` minutes.
+
+    Backs the ``/backward`` slash command — the exact mirror of ``/forward``.
+    The whole mutation runs under ``advance_lock`` so it can never race a
+    natural end-of-track advance.
+
+    * In-track rewinds restart every listening station's player at the new
+      shared offset, so one listener's skip moves everyone (shared radio).
+    * The rewind never goes negative and never crosses into the previous
+      track: the cursor clamps at the START of the current track (position 0)
+      and playback restarts there. That is the chosen symmetric behaviour to
+      ``/forward`` carrying its overflow into following tracks.
+    * While the radio is paused (admin pause) the clock rewinds and stays
+      frozen and stations are NOT restarted — the skip lands exactly where
+      the eventual resume picks it up.
+    * With nobody listening anywhere it's a friendly no-op: the shared radio
+      is not rewound in the background.
+    """
+    if not minutes or not math.isfinite(minutes) or minutes <= 0:
+        return BackwardResult(
+            ok=False, message="⚠️ `minutes` must be a positive number of minutes."
+        )
+    if not any(s.listener_count > 0 for s in stations.values()):
+        return BackwardResult(
+            ok=False, message="⏪ Nobody is listening right now — nothing to skip."
+        )
+
+    async with advance_lock:
+        track_id = state.current_track_id
+        if not track_id:
+            return BackwardResult(ok=False, message="🎙️ Nothing is playing right now.")
+        try:
+            track = await provider.get_by_id(track_id)
+        except Exception as exc:
+            log.warning("backward: could not fetch track %s: %s", track_id, exc)
+            return BackwardResult(
+                ok=False, message="⚠️ Could not reach the file provider. Try again in a moment."
+            )
+        if not track.ready or not track.local_path:
+            return BackwardResult(
+                ok=False, message="⚠️ That track isn't ready yet — try again in a moment."
+            )
+
+        seconds = float(minutes) * 60.0
+        # Clamp at the start of the current track: never negative, never into
+        # the previous track (chosen symmetric behaviour to /forward, see the
+        # PR body for the rationale).
+        final_offset = max(0.0, radio.position() - seconds)
+
+        # Land the shared cursor at the new position, preserving play/pause.
+        radio.seek(final_offset)
+        state.playback_position_seconds = int(final_offset)
+
+        # Reconcile the effective radio state: keeps the clock frozen while an
+        # admin pause is in effect, ticking otherwise (no-op when unchanged).
+        sync_radio_state(stations, radio, state, admin_paused=admin_paused)
+
+        if radio.is_playing():
+            # Restart every live station at the new shared position so they
+            # all hear the same offset.
+            for st in stations.values():
+                if st.listener_count <= 0:
+                    continue
+                try:
+                    await st.player.start(track, seek_seconds=final_offset)
+                except Exception as exc:
+                    log.warning("station %s backward restart failed: %s", st.guild_id, exc)
+
+        paused = not radio.is_playing()
+        message = (
+            f"⏪ Skipped back {_fmt_minutes(float(minutes))} — "
+            f"now at {_fmt_clock(final_offset)}"
+            + (", radio is paused." if paused else ".")
+        )
+        return BackwardResult(
+            ok=True,
+            message=message,
+            new_position_seconds=int(final_offset),
+            track_changed=False,
         )
 
 
@@ -729,6 +831,22 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             admin_paused=admin_paused,
         )
 
+    async def _backward_radio(minutes: float) -> BackwardResult:
+        """Slash-command hook for /backward — see backward_radio().
+
+        Wraps the module-level core with the live ``admin_paused`` flag and the
+        shared ``_advance_lock`` from this bot instance.
+        """
+        return await backward_radio(
+            minutes=minutes,
+            provider=provider,
+            state=state,
+            radio=radio,
+            stations=stations,
+            advance_lock=_advance_lock,
+            admin_paused=admin_paused,
+        )
+
     async def _build_station(guild, cfg) -> Station | None:
         """Connect to a guild's configured voice channel and build a Station.
 
@@ -998,6 +1116,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 radio=radio,
                 stations=stations,
                 forward_radio=_forward_radio,
+                backward_radio=_backward_radio,
             ):
                 tree.command(name=name, description=desc)(cb)
             try:

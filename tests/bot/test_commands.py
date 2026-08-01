@@ -133,7 +133,7 @@ class TestWatcherCount:
 # ---------------------------------------------------------------------------
 
 class TestBuildCommands:
-    def test_returns_four_commands(self, db: Database, state: BotState) -> None:
+    def test_returns_five_commands(self, db: Database, state: BotState) -> None:
         cmds = build_commands(
             db=db,
             provider=FakeProvider(),  # type: ignore[arg-type]
@@ -144,9 +144,10 @@ class TestBuildCommands:
         names = [name for name, _, _ in cmds]
         assert "current" in names
         assert "next" in names
+        assert "backward" in names
         assert "forward" in names
         assert "leaderboard" in names
-        assert len(names) == 4
+        assert len(names) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +428,108 @@ class TestForwardCommand:
             stations={},
         )
         cb = self._get_forward(cmds)
+        inter = _fake_interaction()
+        await cb(inter, minutes=5.0)
+        inter.response.send_message.assert_awaited_once()
+        args, kwargs = inter.response.send_message.call_args
+        assert "not available" in str(args[0])
+        assert kwargs.get("ephemeral") is True
+
+
+# ---------------------------------------------------------------------------
+# /backward
+# ---------------------------------------------------------------------------
+
+class TestBackwardCommand:
+    def _get_backward(self, cmds):
+        for _, _, cb in cmds:
+            if cb.__name__ == "backward_command":
+                return cb
+        raise LookupError("backward_command not found")
+
+    async def test_backs_minutes_and_sends_confirmation(
+        self, db: Database, state: BotState
+    ) -> None:
+        from bot.main import BackwardResult
+
+        seen: list[float] = []
+
+        async def fake_backward(minutes: float) -> BackwardResult:
+            seen.append(minutes)
+            return BackwardResult(
+                ok=True,
+                message="⏪ Skipped back 5 minutes — now at 42:13.",
+                new_position_seconds=2533,
+            )
+
+        cmds = build_commands(
+            db=db,
+            provider=FakeProvider(),
+            state=state,
+            radio=FakeRadioClock(),
+            stations={},
+            backward_radio=fake_backward,
+        )
+        cb = self._get_backward(cmds)
+        inter = _fake_interaction()
+        await cb(inter, minutes=5.0)
+        assert seen == [5.0]
+        inter.response.send_message.assert_awaited_once()
+        args, _kwargs = inter.response.send_message.call_args
+        assert "Skipped back 5 minutes" in str(args[0])
+
+    async def test_fractional_minutes_passed_through(self, db: Database, state: BotState) -> None:
+        from bot.main import BackwardResult
+
+        seen: list[float] = []
+
+        async def fake_backward(minutes: float) -> BackwardResult:
+            seen.append(minutes)
+            return BackwardResult(ok=True, message="ok")
+
+        cmds = build_commands(
+            db=db,
+            provider=FakeProvider(),
+            state=state,
+            radio=FakeRadioClock(),
+            stations={},
+            backward_radio=fake_backward,
+        )
+        cb = self._get_backward(cmds)
+        await cb(_fake_interaction(), minutes=1.5)
+        assert seen == [1.5]
+
+    async def test_responds_with_result_message_even_when_rejected(
+        self, db: Database, state: BotState
+    ) -> None:
+        from bot.main import BackwardResult
+
+        async def fake_backward(minutes: float) -> BackwardResult:
+            return BackwardResult(ok=False, message="⚠️ `minutes` must be a positive number.")
+
+        cmds = build_commands(
+            db=db,
+            provider=FakeProvider(),
+            state=state,
+            radio=FakeRadioClock(),
+            stations={},
+            backward_radio=fake_backward,
+        )
+        cb = self._get_backward(cmds)
+        inter = _fake_interaction()
+        await cb(inter, minutes=0.0)
+        args, _kwargs = inter.response.send_message.call_args
+        assert "must be a positive number" in str(args[0])
+
+    async def test_unavailable_when_no_backward_radio(self, db: Database, state: BotState) -> None:
+        cmds = build_commands(
+            db=db,
+            provider=FakeProvider(),
+            state=state,
+            radio=FakeRadioClock(),
+            stations={},
+        )
+        cb = self._get_backward(cmds)
         inter = _fake_interaction()
         await cb(inter, minutes=5.0)
         inter.response.send_message.assert_awaited_once()
