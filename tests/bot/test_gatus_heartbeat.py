@@ -20,7 +20,7 @@ from bot.gatus_heartbeat import (
     is_radio_healthy,
 )
 
-BASE = "https://gatus.lak.nz"
+BASE = "https://<your-gatus>"
 PUSH_URL = f"{BASE}{ENDPOINT_PATH}"
 
 
