@@ -15,6 +15,56 @@
 
 services:
 
+  # Mounts the estate's Google Drive library (gdrive:mother-of-all-torrents,
+  # same remote the rclone-serve container uses) read-only onto ./media. The
+  # file-provider already binds ./media at /media (LOCAL_MEDIA_PATH=/media),
+  # so the `local` provider is the primary source and archive.org stays wired
+  # as the fallback provider.
+  rclone-mount:
+    image: rclone/rclone:latest
+    container_name: tvbot-rclone-mount
+    restart: unless-stopped
+    command:
+      - mount
+      - gdrive:mother-of-all-torrents
+      - /media
+      - --read-only
+      - --allow-other
+      - --allow-non-empty
+      - --dir-cache-time
+      - 60s
+      - --uid
+      - "1000"
+      - --gid
+      - "1000"
+      - -v
+    environment:
+      XDG_CONFIG_HOME: /config  # matches the rclone-serve container
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - "/dev/fuse:/dev/fuse"
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - type: bind
+        source: ${RCLONE_CONFIG_FILE:-/home/ubuntu/.config/rclone/rclone.conf}
+        target: /config/rclone/rclone.conf
+        read_only: true
+      # rshared so the FUSE mount propagates up to the host ./media dir and
+      # down into file-provider's /media bind (same peer group).
+      - type: bind
+        source: ./media
+        target: /media
+        bind:
+          propagation: rshared
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -n \"$$(ls -A /media 2>/dev/null)\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
   file-provider:
     build:
       context: .
@@ -34,7 +84,15 @@ services:
     volumes:
       - ./data:/data
       - ./cache:/cache
-      - ./media:/media:ro
+      - type: bind
+        source: ./media
+        target: /media
+        read_only: true
+        bind:
+          propagation: rshared
+    depends_on:
+      rclone-mount:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).status==200 else 1)"]
       interval: 30s
