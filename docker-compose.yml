@@ -74,9 +74,12 @@ services:
     networks:
       - default
     healthcheck:
-      test: ["CMD", "rclone", "lsjson", "gdrive:mother-of-all-torrents", "--config", "/config/rclone.conf", "--max-depth", "1"]
+      # Probe the WebDAV HTTP endpoint itself (what the provider actually
+      # connects to), not the gdrive remote behind it — a crashed serve
+      # process must fail this even while the remote is fine.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "--timeout=10", "http://127.0.0.1:8081/"]
       interval: 60s
-      timeout: 30s
+      timeout: 15s
       retries: 3
       start_period: 20s
 

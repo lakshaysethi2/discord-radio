@@ -416,6 +416,11 @@ class ProviderDB:
             (provider, 1 if healthy else 0, error),
         )
 
+    def provider_healthy(self, provider: str) -> bool:
+        """True unless the provider was explicitly marked unhealthy."""
+        row = self.fetchone("SELECT healthy FROM provider_health WHERE provider=?", (provider,))
+        return bool(row["healthy"]) if row else True
+
     def health_snapshot(self) -> dict[str, dict]:
         rows = self.fetchall("SELECT * FROM provider_health")
         return {

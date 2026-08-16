@@ -54,6 +54,57 @@ class TestRefresh:
         assert dav.url == "http://dav:8081"
 
 
+class TestSkipUnhealthyProviders:
+    def test_current_skips_unhealthy_provider(self, db, cache) -> None:
+        from tests.file_provider.conftest import FakeProvider
+
+        class OtherProvider(FakeProvider):
+            name = "other"
+
+        s = Service(db, cache, [FakeProvider({"s1": b"a" * 4}), OtherProvider({"o1": b"b" * 4})])
+        s.refresh_playlist()
+        db.mark_provider("fake", healthy=False)
+        # 'fake' rows get skipped; the first 'other' row plays instead.
+        t = s.current()
+        assert t.provider_used == "other"
+
+    def test_skip_wraps_around(self, db, cache) -> None:
+        from tests.file_provider.conftest import FakeProvider
+
+        class OtherProvider(FakeProvider):
+            name = "other"
+
+        s = Service(db, cache, [FakeProvider({"s1": b"a" * 4, "s2": b"b" * 4}), OtherProvider({"o1": b"c" * 4})])
+        s.refresh_playlist()
+        db.mark_provider("fake", healthy=False)
+        db.set_cursor(1)  # cursor on a 'fake' row; next playable is ahead
+        t = s.current()
+        assert t.provider_used == "other"
+
+    def test_all_unhealthy_degrades_to_fetch_attempt(self, db, cache) -> None:
+
+        from tests.file_provider.conftest import FakeProvider
+
+        s = Service(db, cache, [FakeProvider({"s1": b"a" * 4})])
+        s.refresh_playlist()
+        db.mark_provider("fake", healthy=False)
+        # Cursor row is returned anyway; the fetch itself succeeds here since
+        # FakeProvider has no network — the attempt is what matters.
+        t = s.current()
+        assert t.provider_used == "fake"
+
+    def test_failed_fetch_marks_unhealthy(self, db, cache) -> None:
+        from tests.file_provider.conftest import FakeProvider
+
+        fp = FakeProvider({"s1": b"a" * 4})
+        fp.fail.add("s1")
+        s = Service(db, cache, [fp])
+        s.refresh_playlist()
+        with pytest.raises(ProviderFetchError):
+            s.current()
+        assert db.provider_healthy("fake") is False
+
+
 class TestCurrentAndNext:
     def test_current_returns_first(self, service: Service) -> None:
         t = service.current()

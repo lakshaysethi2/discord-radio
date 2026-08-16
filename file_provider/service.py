@@ -9,6 +9,7 @@ import contextlib
 import logging
 import posixpath
 import re
+import sqlite3
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -349,7 +350,7 @@ class Service:
     # ----------------------------------------------------------- accessors
     def current(self) -> TrackPayload:
         with self._lock:
-            row = self.db.track_at(self.db.get_cursor())
+            row = self._next_playable_row()
             if row is None:
                 raise PlaylistEmpty("playlist is empty")
             payload = self._ensure_and_wrap(row)
@@ -360,6 +361,29 @@ class Service:
         with self._lock:
             self.db.advance_cursor(1)
             return self.current()
+
+    def _next_playable_row(self) -> sqlite3.Row | None:
+        """Row at the cursor, skipping tracks whose provider is unhealthy.
+
+        Skips at most one full lap of the playlist so a mostly-down provider
+        doesn't make the radio loop forever; if every row's provider is
+        unhealthy the cursor row itself is returned and the fetch attempt
+        surfaces the failure.
+        """
+        n = self.db.playlist_length()
+        if n == 0:
+            return None
+        for _ in range(n):
+            row = self.db.track_at(self.db.get_cursor())
+            if row is None:
+                return None
+            if self.db.provider_healthy(row["provider"]):
+                return row
+            log.info(
+                "skip %s: provider %s unhealthy", row["track_id"], row["provider"]
+            )
+            self.db.advance_cursor(1)
+        return self.db.track_at(self.db.get_cursor())
 
     def peek(self, count: int) -> list[TrackPayload]:
         with self._lock:
