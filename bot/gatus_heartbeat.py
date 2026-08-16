@@ -25,6 +25,7 @@ starts the task when both are present.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -108,10 +109,8 @@ def is_radio_healthy(stations: Mapping[str, object], *, now: float | None = None
             if since is None:
                 # First silent sample — record start, but don't fail yet
                 # (transient gap between tracks is <2s).
-                try:
+                with contextlib.suppress(Exception):
                     setattr(st, attr, cur)
-                except Exception:
-                    pass
                 # If threshold is 0, fail immediately; otherwise wait.
                 if silence_threshold <= 0:
                     return False
@@ -120,16 +119,12 @@ def is_radio_healthy(stations: Mapping[str, object], *, now: float | None = None
                 return False
         else:
             # Playing again — clear silence marker.
-            try:
+            with contextlib.suppress(Exception):
                 if hasattr(st, "_gatus_silence_since"):
                     delattr(st, "_gatus_silence_since")
-            except Exception:
-                pass
-            # Also clear via setattr None for slots-based dataclasses.
-            try:
-                setattr(st, "_gatus_silence_since", None)
-            except Exception:
-                pass
+            # Also clear via assignment for slots-based dataclasses.
+            with contextlib.suppress(Exception):
+                st._gatus_silence_since = None  # type: ignore[attr-defined]
     return True
 
 

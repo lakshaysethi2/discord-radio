@@ -358,9 +358,9 @@ class TestNowPlayingForbidden:
     async def test_post_or_replace_403_clears_channel(
         self, db: Database, caplog
     ) -> None:
-        from bot.milestones import NowPlaying
-
         import discord
+
+        from bot.milestones import NowPlaying
 
         class _FakeResp:
             status = 403
@@ -401,9 +401,9 @@ class TestNowPlayingForbidden:
     async def test_update_watcher_count_403_clears_channel(
         self, db: Database, caplog
     ) -> None:
-        from bot.milestones import NowPlaying
-
         import discord
+
+        from bot.milestones import NowPlaying
 
         class _FakeResp:
             status = 403
