@@ -37,8 +37,20 @@ class LocalProvider(BaseProvider):
         if not self.is_configured():
             log.info("local media root %s does not exist", self.media_root)
             return []
+        # Walk manually (instead of rglob) so one unreadable directory (e.g. a
+        # transient EIO on a network mount) doesn't abort the whole scan.
+        paths: list[Path] = []
+
+        def _onerror(exc: OSError) -> None:
+            log.warning("local scan: skipping unreadable path: %s", exc)
+
+        for dirpath, dirnames, filenames in os.walk(self.media_root, onerror=_onerror):
+            dirnames.sort()
+            for name in sorted(filenames):
+                paths.append(Path(dirpath) / name)
+
         tracks: list[ProviderTrack] = []
-        for path in sorted(self.media_root.rglob("*")):
+        for path in sorted(paths):
             if not path.is_file():
                 continue
             ext = path.suffix.lower()

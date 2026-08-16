@@ -53,6 +53,24 @@ def test_missing_root_yields_empty(tmp_path: Path) -> None:
     assert p.list_tracks() == []
 
 
+@pytest.mark.skipif(
+    __import__("os").geteuid() == 0, reason="root bypasses directory permissions"
+)
+def test_scan_tolerates_unreadable_dir(media_root: Path) -> None:
+    """One unreadable directory must not abort the whole scan."""
+    bad = media_root / "bad"
+    bad.mkdir()
+    (bad / "secret.mp3").write_bytes(b"s")
+    bad.chmod(0o000)
+    try:
+        p = LocalProvider(media_root)
+        tracks = p.list_tracks()
+    finally:
+        bad.chmod(0o755)
+    assert any(t.source_ref == "a.mp3" for t in tracks)
+    assert all("bad" not in t.source_ref for t in tracks)
+
+
 def test_ensure_cached_hardlinks_or_copies(media_root: Path, tmp_path: Path) -> None:
     p = LocalProvider(media_root)
     target = tmp_path / "cache" / "x.mp3"
