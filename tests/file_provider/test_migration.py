@@ -49,22 +49,29 @@ def migrated(db, cache) -> Service:
 
 # ================================================================== date keys
 class TestDateKey:
-    def test_mmddyy(self) -> None:
+    def test_bto_mmddyy(self) -> None:
         assert _date_key("BTO Radio Interviews — #03 - 04_25_02 - #9B58") == "2002-04"
         assert _date_key("#01 - 11_08_01 - #4193") == "2001-11"
 
-    def test_month_name(self) -> None:
+    def test_pure_month_name(self) -> None:
         assert _date_key("apr-2002") == "2002-04"
-        # Regex takes the month adjacent to the year (leftmost-longest).
-        assert _date_key("Satsangs/satsang-qa-jan-mar-jul-2011") == "2011-07"
+        assert _date_key("nov 2001") == "2001-11"
+        assert _date_key("apr2002") == "2002-04"
+
+    def test_embedded_months_get_no_key(self) -> None:
+        # Audiobook/compilation titles must NOT claim a lecture's month slot.
+        assert _date_key("Satsangs/satsang-qa-jan-mar-jul-2011") is None
+        assert _date_key("TheWaytoGod:RadicalSubjectivity:The'I'ofSelf-February2002[B006W1639I]") is None
+        assert _date_key("HomoSpiritusDevotionalNondualitySeries(SpiritualCommunity-June2003)") is None
 
     def test_none_when_no_date(self) -> None:
         assert _date_key("volume-i-power-vs-force") is None
         assert _date_key("only on archive") is None
 
     def test_invalid_ranges(self) -> None:
-        assert _date_key("13_25_02") is None
-        assert _date_key("04_00_02") is None
+        assert _date_key("#00 - 13_25_02 - #aa") is None
+        assert _date_key("#00 - 04_00_02 - #aa") is None
+        assert _date_key("xyz-1999") is None
 
 
 # ================================================================= migration
@@ -106,6 +113,17 @@ class TestMigrateProvider:
     def test_missing_provider_returns_zero(self, migrated: Service) -> None:
         assert migrated.migrate_provider(primary="webdav", fallback="telegram") == 0
         assert migrated.migrate_provider(primary="telegram", fallback="archive") == 0
+
+    def test_refresh_prunes_inactive_provider_rows(self, db, cache, fake_provider) -> None:
+        db.upsert_tracks(
+            [_row("telegram", "chan/1.mp3", "stale telegram track", 0)]
+        )
+        s = Service(db, cache, [fake_provider])
+        assert db.playlist_length() == 1
+        s.refresh_playlist()
+        rows = db.fetchall("SELECT DISTINCT provider FROM tracks")
+        assert [r["provider"] for r in rows] == ["fake"]
+        assert db.playlist_length() == 3
 
     def test_refresh_triggers_migration(self, db, cache, fake_provider) -> None:
         class FakeWebDav:

@@ -79,26 +79,37 @@ _MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
-_MONTH_NAME_RE = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[- ]?(\d{2}|\d{4})\b")
-_MMDDYY_RE = re.compile(r"\b(\d{1,2})[-_](\d{1,2})[-_](\d{2})\b")
+# Pure month-year names: the whole title is e.g. 'apr-2002' (gdrive monthly
+# lecture files). Not '...TheWaytoGod-February2002[B00..]' — that's an
+# audiobook title and must NOT claim the Feb-2002 lecture slot.
+_PURE_MONTH_YEAR_RE = re.compile(
+    r"^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[- _]?(\d{2}|\d{4})$"
+)
+# BTO-style archive titles: '#NN - MM_DD_YY - #HASH'.
+_BTO_DATE_RE = re.compile(r"#\d+[- _]+(\d{1,2})[-_](\d{1,2})[-_](\d{2})")
 
 
 def _date_key(title: str) -> str | None:
-    """Extract a 'YYYY-MM' key from a title, if one is unambiguous.
+    """Extract a 'YYYY-MM' key from a title, only when unambiguous.
 
-    Handles '... #03 - 04_25_02 - #9B58' (MM_DD_YY) and 'apr-2002'-style names.
-    Returns None when no month/year can be parsed.
+    Two shapes qualify:
+      * the whole title is a month-year name ('apr-2002', 'nov 2001');
+      * the title contains a BTO-style token '#NN - MM_DD_YY' (archive side).
+
+    Everything else (audiobook titles with an embedded month, satsang
+    compilations, ...) gets no date key — a wrong date match would silently
+    swap a lecture for an audiobook in the playlist.
     """
-    m = _MONTH_NAME_RE.search(title)
+    t = title.strip().lower()
+    m = _PURE_MONTH_YEAR_RE.match(t)
     if m:
-        month = _MONTHS[m.group(1)]
         year = int(m.group(2))
         if year < 100:
             year += 2000
         if not 1990 <= year <= 2100:
             return None
-        return f"{year:04d}-{month:02d}"
-    m = _MMDDYY_RE.search(title)
+        return f"{year:04d}-{_MONTHS[m.group(1)]:02d}"
+    m = _BTO_DATE_RE.search(t)
     if m:
         month, _day, yy = int(m.group(1)), int(m.group(2)), int(m.group(3))
         if not 1 <= month <= 12 or not 1 <= _day <= 31:
@@ -222,6 +233,17 @@ class Service:
             self.db.prune_provider_tracks(provider.name, active_refs)
             added_total += added
             updated_total += updated
+
+        # Drop rows whose provider is no longer active (e.g. stale 'local'
+        # rows from a FUSE-mounted era). Ghost rows would 502 mid-playlist.
+        active = {p.name for p in self.providers}
+        with self._lock:
+            for row in self.db.fetchall("SELECT DISTINCT provider FROM tracks"):
+                name = row["provider"]
+                if name not in active:
+                    pruned = self.db.prune_provider_tracks(name, set())
+                    if pruned:
+                        log.info("pruned %d stale tracks from inactive provider %s", pruned, name)
 
         # Provider migration: when webdav (gdrive) is present alongside archive,
         # re-point title/date-matched archive rows onto their gdrive counterparts
