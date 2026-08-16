@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -70,6 +71,38 @@ def _get_tv_db_archive_items() -> list[str] | None:
             if row and row[0] is not None:
                 db_val = row[0].strip()
                 return [x.strip() for x in db_val.split(",") if x.strip()]
+    return None
+
+
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+_MONTH_NAME_RE = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[- ]?(\d{2}|\d{4})\b")
+_MMDDYY_RE = re.compile(r"\b(\d{1,2})[-_](\d{1,2})[-_](\d{2})\b")
+
+
+def _date_key(title: str) -> str | None:
+    """Extract a 'YYYY-MM' key from a title, if one is unambiguous.
+
+    Handles '... #03 - 04_25_02 - #9B58' (MM_DD_YY) and 'apr-2002'-style names.
+    Returns None when no month/year can be parsed.
+    """
+    m = _MONTH_NAME_RE.search(title)
+    if m:
+        month = _MONTHS[m.group(1)]
+        year = int(m.group(2))
+        if year < 100:
+            year += 2000
+        if not 1990 <= year <= 2100:
+            return None
+        return f"{year:04d}-{month:02d}"
+    m = _MMDDYY_RE.search(title)
+    if m:
+        month, _day, yy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if not 1 <= month <= 12 or not 1 <= _day <= 31:
+            return None
+        return f"{2000 + yy:04d}-{month:02d}"
     return None
 
 
@@ -155,12 +188,89 @@ class Service:
             self.db.prune_provider_tracks(provider.name, active_refs)
             added_total += added
             updated_total += updated
+
+        # Provider migration: when webdav (gdrive) is present alongside archive,
+        # re-point title/date-matched archive rows onto their gdrive counterparts
+        # so the playlist keeps serving the same content from the primary source.
+        names = {p.name for p in self.providers}
+        if "webdav" in names and "archive" in names:
+            moved = self.migrate_provider(primary="webdav", fallback="archive")
+            if moved:
+                log.info("re-pointed %d archive tracks onto webdav", moved)
+
         return {
             "added": added_total,
             "updated": updated_total,
             "total": self.db.playlist_length(),
             "errors": errors,
         }
+
+    # ------------------------------------------------------------ migration
+    def migrate_provider(self, primary: str, fallback: str) -> int:
+        """Move `fallback` rows onto their title-matched `primary` counterparts.
+
+        Matched primary rows adopt the fallback row's playlist position; the
+        fallback row is dropped, and unmatched primary rows are appended after
+        the remaining fallback rows. The result is renumbered sequentially, so
+        the playlist cursor keeps pointing at the same content it did before
+        (now served from the primary source). Idempotent across refreshes.
+        """
+        with self._lock:
+            primary_rows = self.db.fetchall(
+                "SELECT * FROM tracks WHERE provider=? ORDER BY sort_order, track_id",
+                (primary,),
+            )
+            fallback_rows = self.db.fetchall(
+                "SELECT * FROM tracks WHERE provider=? ORDER BY sort_order, track_id",
+                (fallback,),
+            )
+            if not fallback_rows or not primary_rows:
+                return 0
+
+            used: set[str] = set()
+            partner_of: dict[str, str] = {}  # fallback track_id -> primary track_id
+            for fb in fallback_rows:
+                fb_keys = self._match_keys(fb["title"])
+                if not fb_keys:
+                    continue
+                for pr in primary_rows:
+                    if pr["track_id"] in used:
+                        continue
+                    if fb_keys & self._match_keys(pr["title"]):
+                        used.add(pr["track_id"])
+                        partner_of[fb["track_id"]] = pr["track_id"]
+                        break
+
+            if not partner_of:
+                return 0
+
+            # Final order: fallback rows (with matched ones replaced by their
+            # primary partner at the same position), then unmatched primaries.
+            final_order: list[str] = []
+            for fb in fallback_rows:
+                final_order.append(partner_of.get(fb["track_id"], fb["track_id"]))
+            for pr in primary_rows:
+                if pr["track_id"] not in used:
+                    final_order.append(pr["track_id"])
+
+            return self.db.repoint_tracks(drop_ids=set(partner_of), final_order=final_order)
+
+    @staticmethod
+    def _match_keys(title: str) -> set[str]:
+        """Keys for cross-provider title matching.
+
+        Always the alnum-normalized title; plus a 'YYYY-MM' date key when the
+        title contains a parseable month/year (e.g. '#03 - 04_25_02 - #9B58'
+        ↔ 'apr-2002').
+        """
+        keys: set[str] = set()
+        norm = re.sub(r"[^a-z0-9]", "", title.lower())
+        if norm:
+            keys.add(norm)
+        date_key = _date_key(title.lower())
+        if date_key:
+            keys.add(date_key)
+        return keys
 
     @staticmethod
     def _provider_tracks_to_rows(provider: BaseProvider, tracks: list[ProviderTrack]) -> list[dict]:
@@ -411,6 +521,17 @@ def _providers_from_config(config: Config) -> list[BaseProvider]:
             from file_provider.providers.archive import ArchiveOrgProvider
 
             out.append(ArchiveOrgProvider(item_ids=archive_items))
+        elif name == "webdav":
+            from file_provider.providers.webdav import WebDavProvider
+
+            out.append(
+                WebDavProvider(
+                    url=config.gdrive_webdav_url,
+                    path=config.gdrive_webdav_path,
+                    username=config.gdrive_webdav_user,
+                    password=config.gdrive_webdav_pass,
+                )
+            )
         elif name == "telegram":
             from file_provider.providers.telegram import TelegramProvider
 
