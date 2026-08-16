@@ -28,12 +28,12 @@ class TestLoad:
         cfg = config.load()
         assert cfg.gatus_push_url == ""
         assert cfg.gatus_push_token == ""
-        assert cfg.gatus_push_interval_seconds == 30
-        monkeypatch.setenv("GATUS_PUSH_URL", "https://<your-gatus>")
+        assert cfg.gatus_push_interval_seconds == 5
+        monkeypatch.setenv("GATUS_PUSH_URL", "https://gatus.example.com")
         monkeypatch.setenv("GATUS_PUSH_TOKEN", "secret")
         monkeypatch.setenv("GATUS_PUSH_INTERVAL_SECONDS", "45")
         cfg = config.load()
-        assert cfg.gatus_push_url == "https://<your-gatus>"
+        assert cfg.gatus_push_url == "https://gatus.example.com"
         assert cfg.gatus_push_token == "secret"
         assert cfg.gatus_push_interval_seconds == 45
 
