@@ -253,6 +253,8 @@ class BotStateKey:
     LAST_MONTHLY_RESET = "last_monthly_reset"  # yyyy-mm we last snapshotted
     STREAM_VOLUME_PERCENT = "stream_volume_percent"
     ARCHIVE_ORG_ITEMS = "archive_org_items"
+    GDRIVE_WEBDAV_URL = "gdrive_webdav_url"
+    GDRIVE_WEBDAV_PATH = "gdrive_webdav_path"
 
 
 BOT_STATE_KEYS: frozenset[str] = frozenset(

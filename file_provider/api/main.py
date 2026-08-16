@@ -127,7 +127,11 @@ def create_app(service: Service | None = None) -> FastAPI:
     @app.post("/refresh")
     def post_refresh(payload: dict | None = None) -> dict:
         items = payload.get("archive_org_items") if payload else None
-        return svc().refresh_playlist(archive_org_items=items)
+        return svc().refresh_playlist(
+            archive_org_items=items,
+            gdrive_webdav_url=payload.get("gdrive_webdav_url") if payload else None,
+            gdrive_webdav_path=payload.get("gdrive_webdav_path") if payload else None,
+        )
 
     return app
 

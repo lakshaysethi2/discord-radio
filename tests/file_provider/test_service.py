@@ -37,6 +37,22 @@ class TestRefresh:
         archive_p = next(p for p in s.providers if isinstance(p, ArchiveOrgProvider))
         assert archive_p.item_ids == ["item1", "item2"]
 
+    def test_refresh_dynamic_gdrive_source(self, db, cache, fake_provider) -> None:
+        s = Service(db, cache, [fake_provider])
+        s.refresh_playlist(
+            gdrive_webdav_url="http://dav:8081",
+            gdrive_webdav_path="mother-of-all-torrents",
+        )
+        from file_provider.providers.webdav import WebDavProvider
+
+        dav = next(p for p in s.providers if isinstance(p, WebDavProvider))
+        assert dav.url == "http://dav:8081"
+        assert dav.path == "/mother-of-all-torrents"
+        # Re-call with a new path updates the same instance.
+        s.refresh_playlist(gdrive_webdav_path="/other")
+        assert dav.path == "/other"
+        assert dav.url == "http://dav:8081"
+
 
 class TestCurrentAndNext:
     def test_current_returns_first(self, service: Service) -> None:

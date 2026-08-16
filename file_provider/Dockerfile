@@ -40,7 +40,7 @@ VOLUME ["/data", "/cache", "/media"]
 EXPOSE 8001
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/docker-entrypoint.sh"]
-CMD ["python", "-m", "uvicorn", "file_provider.api.main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["python", "-m", "uvicorn", "file_provider.api.main:app", "--host", "0.0.0.0", "--port", "8001", "--log-level", "warning"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).status==200 else 1)"

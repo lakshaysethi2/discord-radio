@@ -240,12 +240,24 @@ class FileProviderClient:
             raise ProviderError(f"POST /tracks/{track_id}/played -> HTTP {resp.status_code}")
 
     async def refresh(
-        self, archive_org_items: str | None = None, *, timeout: float = 60.0
+        self,
+        archive_org_items: str | None = None,
+        *,
+        gdrive_webdav_url: str | None = None,
+        gdrive_webdav_path: str | None = None,
+        timeout: float = 60.0,
     ) -> dict[str, Any]:
         """POST /refresh — trigger file-provider rescan."""
         kwargs: dict[str, Any] = {"timeout": timeout}
+        payload: dict[str, Any] = {}
         if archive_org_items:
-            kwargs["json"] = {"archive_org_items": archive_org_items}
+            payload["archive_org_items"] = archive_org_items
+        if gdrive_webdav_url:
+            payload["gdrive_webdav_url"] = gdrive_webdav_url
+        if gdrive_webdav_path:
+            payload["gdrive_webdav_path"] = gdrive_webdav_path
+        if payload:
+            kwargs["json"] = payload
         resp = await self._request("POST", "/refresh", **kwargs)
         if resp.status_code != 200:
             raise ProviderError(f"POST /refresh -> HTTP {resp.status_code}: {resp.text[:200]}")

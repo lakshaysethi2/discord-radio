@@ -579,12 +579,16 @@ async def apply_server_config(
 
 
 def _init_logging() -> None:
+    # Default WARNING so third-party HTTP/health-check noise stays quiet;
+    # our own code and discord.py lifecycle keep INFO (the interesting events).
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
-    # discord.py is noisy at DEBUG; keep INFO.
+    logging.getLogger("bot").setLevel(logging.INFO)
     logging.getLogger("discord").setLevel(logging.INFO)
+    for noisy in ("httpx", "httpcore", "uvicorn.access"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 async def _resume_or_start(
@@ -745,7 +749,18 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                     from db.models import BotStateKey
 
                     items = db.get_state(BotStateKey.ARCHIVE_ORG_ITEMS)
-                res = await provider.refresh(archive_org_items=items)
+                gdrive_url = (payload or {}).get("gdrive_webdav_url") if payload else None
+                gdrive_path = (payload or {}).get("gdrive_webdav_path") if payload else None
+                if gdrive_url is None or gdrive_path is None:
+                    from db.models import BotStateKey
+
+                    gdrive_url = gdrive_url or db.get_state(BotStateKey.GDRIVE_WEBDAV_URL)
+                    gdrive_path = gdrive_path or db.get_state(BotStateKey.GDRIVE_WEBDAV_PATH)
+                res = await provider.refresh(
+                    archive_org_items=items,
+                    gdrive_webdav_url=gdrive_url,
+                    gdrive_webdav_path=gdrive_path,
+                )
                 return f"ok:{res}"
             except Exception as exc:
                 return f"error: {exc}"

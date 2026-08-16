@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import posixpath
 import re
 import threading
 from dataclasses import asdict, dataclass
@@ -140,8 +141,17 @@ class Service:
             return lk
 
     # ---------------------------------------------------------------- scan
-    def refresh_playlist(self, archive_org_items: str | list[str] | None = None) -> dict:
-        """Ask every configured provider for its tracks; merge into the DB."""
+    def refresh_playlist(
+        self,
+        archive_org_items: str | list[str] | None = None,
+        gdrive_webdav_url: str | None = None,
+        gdrive_webdav_path: str | None = None,
+    ) -> dict:
+        """Ask every configured provider for its tracks; merge into the DB.
+
+        ``gdrive_webdav_url``/``gdrive_webdav_path`` let the dashboard repoint
+        the webdav provider at runtime (same pattern as archive_org_items).
+        """
         if archive_org_items is None:
             db_items = _get_tv_db_archive_items()
             if db_items is not None:
@@ -166,6 +176,30 @@ class Service:
                         self._provider_by_name[archive_provider.name] = archive_provider
                 else:
                     archive_provider.item_ids = items
+
+        if gdrive_webdav_url is not None or gdrive_webdav_path is not None:
+            from file_provider.providers.webdav import WebDavProvider
+
+            with self._lock:
+                webdav_provider = next(
+                    (p for p in self.providers if isinstance(p, WebDavProvider)), None
+                )
+                if webdav_provider is None:
+                    webdav_provider = WebDavProvider(
+                        url=gdrive_webdav_url or "",
+                        path=gdrive_webdav_path or "/",
+                    )
+                    self.providers.append(webdav_provider)
+                    self._provider_by_name[webdav_provider.name] = webdav_provider
+                else:
+                    if gdrive_webdav_url is not None:
+                        webdav_provider.url = (gdrive_webdav_url or "").rstrip("/")
+                    if gdrive_webdav_path is not None:
+                        webdav_provider.path = posixpath.normpath(
+                            "/" + (gdrive_webdav_path or "/").lstrip("/")
+                        )
+                        if webdav_provider.path == "/.":
+                            webdav_provider.path = "/"
 
         added_total = updated_total = 0
         errors: dict[str, str] = {}

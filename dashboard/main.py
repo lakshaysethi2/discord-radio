@@ -465,6 +465,12 @@ def create_app(
         archive_org_items = app.state.db.get_state(BotStateKey.ARCHIVE_ORG_ITEMS)
         if archive_org_items is None:
             archive_org_items = os.environ.get("ARCHIVE_ORG_ITEMS", "")
+        gdrive_webdav_url = app.state.db.get_state(BotStateKey.GDRIVE_WEBDAV_URL)
+        if gdrive_webdav_url is None:
+            gdrive_webdav_url = os.environ.get("GDRIVE_WEBDAV_URL", "")
+        gdrive_webdav_path = app.state.db.get_state(BotStateKey.GDRIVE_WEBDAV_PATH)
+        if gdrive_webdav_path is None:
+            gdrive_webdav_path = os.environ.get("GDRIVE_WEBDAV_PATH", "/")
         return _render(
             request,
             "queue.html",
@@ -480,6 +486,8 @@ def create_app(
                 "current_page": current_page,
                 "error": error,
                 "archive_org_items": archive_org_items,
+                "gdrive_webdav_url": gdrive_webdav_url,
+                "gdrive_webdav_path": gdrive_webdav_path,
                 "csrf": sess.get("csrf", ""),
                 "command_flash": request.query_params.get("flash"),
             },
@@ -553,6 +561,32 @@ def create_app(
         )
         return RedirectResponse(
             "/queue?flash=Saved+archive.org+items+and+queued+playlist+rescan", status_code=303
+        )
+
+    @app.post("/controls/gdrive_source")
+    async def set_gdrive_source(
+        request: Request,
+        gdrive_webdav_url: str = Form(""),
+        gdrive_webdav_path: str = Form("/"),
+        csrf: str = Form(""),
+        user: auth.SessionUser = Depends(_require_admin),
+    ) -> Response:
+        sess = _get_session(request) or {}
+        if not sess.get("csrf") or not hmac.compare_digest(sess["csrf"], csrf):
+            raise HTTPException(status_code=403, detail="invalid CSRF token")
+
+        url = gdrive_webdav_url.strip()
+        path = gdrive_webdav_path.strip() or "/"
+        app.state.db.set_state(BotStateKey.GDRIVE_WEBDAV_URL, url)
+        app.state.db.set_state(BotStateKey.GDRIVE_WEBDAV_PATH, path)
+        commands.enqueue(
+            app.state.db,
+            command="refresh_playlist",
+            requested_by=user.user_id,
+            payload={"gdrive_webdav_url": url, "gdrive_webdav_path": path},
+        )
+        return RedirectResponse(
+            "/queue?flash=Saved+gdrive+source+and+queued+playlist+rescan", status_code=303
         )
 
     # ---- Controls ----
