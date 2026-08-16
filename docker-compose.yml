@@ -30,10 +30,15 @@ services:
       LOCAL_MEDIA_PATH: /media
       FILE_PROVIDER_HOST: 0.0.0.0
       FILE_PROVIDER_PORT: 8001
+    ports:
+      - "8001:8001"
     volumes:
       - ./data:/data
       - ./cache:/cache
       - ./media:/media:ro
+    networks:
+      - default
+      - gatus_default
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).status==200 else 1)"]
       interval: 30s
@@ -138,3 +143,7 @@ services:
     entrypoint: ["/bin/bash"]
     stdin_open: true
     tty: true
+
+networks:
+  gatus_default:
+    external: true

@@ -664,7 +664,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
 
     db = Database(config.database_path)
     state = BotState(db)
-    provider = FileProviderClient(config.file_provider_base_url)
+    provider = FileProviderClient(config.file_provider_base_url, timeout=60.0)
 
     # Optional Gatus voice heartbeat — fully disabled unless both env vars are
     # set, so other deployments run unchanged (see bot.gatus_heartbeat).
