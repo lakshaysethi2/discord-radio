@@ -5,7 +5,7 @@
 #
 # Services:
 #   file-provider  ─ FastAPI + Telethon/Local/WebDAV backends
-#   rclone-webdav  ─ rclone serve webdav sidecar over gdrive (read-only)
+#   rclone-webdav  ─ shared rclone sidecar (see hawkins-library compose; serves HTTP :8080 + WebDAV :8081)
 #   bot            ─ Discord bot (long-running)
 #   dashboard      ─ FastAPI admin UI
 #   test           ─ one-shot: pytest against the mounted source tree
@@ -40,48 +40,12 @@ services:
     networks:
       - default
       - gatus_default
-    depends_on:
-      rclone-webdav:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).status==200 else 1)"]
       interval: 30s
       timeout: 5s
       start_period: 15s
       retries: 3
-
-  rclone-webdav:
-    # rclone serve webdav over gdrive:mother-of-all-torrents — the file-
-    # provider's primary content source (WebDAV beats a FUSE mount: no stale
-    # mountpoint to wedge the stack, and a crash marks the provider unhealthy
-    # instead of hanging the kernel VFS).
-    image: rclone/rclone:latest
-    container_name: tvbot-rclone-webdav
-    restart: unless-stopped
-    command: >
-      serve webdav gdrive:mother-of-all-torrents
-      --addr 0.0.0.0:8081 --read-only
-      --config /config/rclone.conf
-      --dir-cache-time 60s
-      --log-level ERROR
-    volumes:
-      # OAuth token file from the host, read-only — no secrets in compose.
-      - /home/ubuntu/.config/rclone/rclone.conf:/config/rclone.conf:ro
-    ports:
-      # Loopback-only for host debugging; the provider reaches it over the
-      # compose network (http://rclone-webdav:8081).
-      - "127.0.0.1:8081:8081"
-    networks:
-      - default
-    healthcheck:
-      # Probe the WebDAV HTTP endpoint itself (what the provider actually
-      # connects to), not the gdrive remote behind it — a crashed serve
-      # process must fail this even while the remote is fine.
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "--timeout=10", "http://127.0.0.1:8081/"]
-      interval: 60s
-      timeout: 15s
-      retries: 3
-      start_period: 20s
 
   bot:
     build:
