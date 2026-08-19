@@ -84,6 +84,14 @@ async def test_next_uses_post(client: FileProviderClient) -> None:
 
 
 @respx.mock
+async def test_previous_uses_post(client: FileProviderClient) -> None:
+    route = respx.post(f"{BASE}/previous").mock(return_value=httpx.Response(200, json=TRACK_JSON))
+    async with client as fp:
+        await fp.previous()
+    assert route.called
+
+
+@respx.mock
 async def test_peek_returns_list(client: FileProviderClient) -> None:
     respx.get(f"{BASE}/peek").mock(
         return_value=httpx.Response(200, json=[TRACK_JSON, {**TRACK_JSON, "track_id": "b"}])

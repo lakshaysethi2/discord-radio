@@ -5,6 +5,7 @@ Endpoints mirror the bot-side client (provider.client.FileProviderClient):
     GET  /health                        provider health snapshot
     GET  /current                       -> TrackPayload
     POST /next                          -> TrackPayload
+    POST /previous                      -> TrackPayload
     GET  /peek?count=N                  -> list[TrackPayload]
     GET  /tracks/{track_id}             -> TrackPayload (force fetch)
     POST /tracks/{track_id}/played      no-op ack
@@ -75,6 +76,15 @@ def create_app(service: Service | None = None) -> FastAPI:
     def post_next() -> JSONResponse:
         try:
             return JSONResponse(svc().next().to_dict())
+        except PlaylistEmpty as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ProviderFetchError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.post("/previous")
+    def post_previous() -> JSONResponse:
+        try:
+            return JSONResponse(svc().previous().to_dict())
         except PlaylistEmpty as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ProviderFetchError as exc:

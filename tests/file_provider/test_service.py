@@ -127,6 +127,27 @@ class TestSkipUnhealthyProviders:
         s.refresh_playlist()
         assert db.playlist_length() == 3
 
+    def test_previous_all_unhealthy_still_uses_cached_row(self, db, cache, fake_provider) -> None:
+        s = Service(db, cache, [fake_provider])
+        s.refresh_playlist()
+        first = s.current()
+        db.mark_provider("fake", healthy=False)
+        t = s.previous()
+        assert t.track_id != first.track_id
+        assert t.ready is True
+
+    def test_previous_skips_unhealthy_provider(self, db, cache) -> None:
+        from tests.file_provider.conftest import FakeProvider
+
+        class OtherProvider(FakeProvider):
+            name = "other"
+
+        s = Service(db, cache, [FakeProvider({"s1": b"a" * 4}), OtherProvider({"o1": b"b" * 4})])
+        s.refresh_playlist()
+        db.mark_provider("fake", healthy=False)
+        t = s.previous()
+        assert t.provider_used == "other"
+
     def test_current_skips_failed_fetch_and_plays_next(self, db, cache) -> None:
         from tests.file_provider.conftest import FakeProvider
 
@@ -169,6 +190,19 @@ class TestCurrentAndNext:
         service.next()  # 2
         t = service.next()  # wraps to 0
         assert t.playlist_position == 0
+        _wait_prefetch(service)
+
+    def test_previous_steps_back(self, service: Service) -> None:
+        service.next()
+        t = service.previous()
+        assert t.playlist_position == 0
+        assert t.title == "Track s1"
+        _wait_prefetch(service)
+
+    def test_previous_wraps(self, service: Service) -> None:
+        t = service.previous()
+        assert t.playlist_position == 2
+        assert t.title == "Track s3"
         _wait_prefetch(service)
 
     def test_current_fetches_file(self, service: Service, fake_provider) -> None:

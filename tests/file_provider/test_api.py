@@ -35,6 +35,12 @@ def test_next(client) -> None:
     assert r.json()["title"] == "Track s2"
 
 
+def test_previous(client) -> None:
+    r = client.post("/previous")
+    assert r.status_code == 200
+    assert r.json()["title"] == "Track s3"
+
+
 def test_peek(client) -> None:
     r = client.get("/peek?count=2")
     assert r.status_code == 200

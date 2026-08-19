@@ -354,6 +354,52 @@ class Service:
             self.db.advance_cursor(1)
             return self.current()
 
+    def previous(self) -> TrackPayload:
+        """Step the cursor back one playable track (wraps).
+
+        Walks backward so an unhealthy or unfetchable row does not bounce
+        the radio forward again via ``current()``.
+        """
+        with self._lock:
+            n = self.db.playlist_length()
+            if n == 0:
+                raise PlaylistEmpty("playlist is empty")
+            self.db.advance_cursor(-1)
+            fallback_pos = self.db.get_cursor()
+            last_exc: Exception | None = None
+            for i in range(n):
+                row = self.db.track_at(self.db.get_cursor())
+                if row is None:
+                    break
+                if self.db.provider_healthy(row["provider"]):
+                    try:
+                        payload = self._ensure_and_wrap(row)
+                        self._kick_prefetch()
+                        return payload
+                    except ProviderFetchError as exc:
+                        last_exc = exc
+                        log.warning("skip %s: fetch failed: %s", row["track_id"], exc)
+                else:
+                    log.info(
+                        "skip %s: provider %s unhealthy", row["track_id"], row["provider"]
+                    )
+                if i < n - 1:
+                    self.db.advance_cursor(-1)
+            # Every row skipped: play the first step back anyway (cached
+            # files still work when the provider is marked unhealthy).
+            self.db.set_cursor(fallback_pos)
+            row = self.db.track_at(fallback_pos)
+            if row is not None:
+                try:
+                    payload = self._ensure_and_wrap(row)
+                    self._kick_prefetch()
+                    return payload
+                except ProviderFetchError as exc:
+                    last_exc = exc
+            if last_exc is not None:
+                raise last_exc
+            raise PlaylistEmpty("playlist is empty")
+
     def _next_playable_row(self) -> sqlite3.Row | None:
         """Row at the cursor, skipping tracks whose provider is unhealthy.
 

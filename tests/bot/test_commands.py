@@ -133,7 +133,7 @@ class TestWatcherCount:
 # ---------------------------------------------------------------------------
 
 class TestBuildCommands:
-    def test_returns_five_commands(self, db: Database, state: BotState) -> None:
+    def test_returns_six_commands(self, db: Database, state: BotState) -> None:
         cmds = build_commands(
             db=db,
             provider=FakeProvider(),  # type: ignore[arg-type]
@@ -144,10 +144,11 @@ class TestBuildCommands:
         names = [name for name, _, _ in cmds]
         assert "current" in names
         assert "next" in names
+        assert "previous" in names
         assert "rewind" in names
         assert "forward" in names
         assert "leaderboard" in names
-        assert len(names) == 5
+        assert len(names) == 6
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +333,75 @@ class TestNextCommand:
         station.player.skip.assert_not_awaited()
         args, _ = inter.response.send_message.call_args
         assert "No active listeners" in str(args[0])
+
+
+# ---------------------------------------------------------------------------
+# /previous
+# ---------------------------------------------------------------------------
+
+
+class TestPreviousCommand:
+    def _get_previous(self, cmds):
+        for _, _, cb in cmds:
+            if cb.__name__ == "previous_command":
+                return cb
+        raise LookupError("previous_command not found")
+
+    async def test_no_active_stations(self, db: Database, state: BotState) -> None:
+        cmds = build_commands(
+            db=db,
+            provider=FakeProvider(),
+            state=state,
+            radio=FakeRadioClock(),
+            stations={},
+        )
+        cb = self._get_previous(cmds)
+        inter = _fake_interaction()
+        await cb(inter)
+        args, kwargs = inter.response.send_message.call_args
+        assert "No active listeners" in str(args[0])
+        assert kwargs.get("ephemeral") is True
+
+    async def test_goes_previous_on_active_station(self, db: Database, state: BotState) -> None:
+        from bot.main import PreviousResult
+
+        called = {"n": 0}
+
+        async def fake_previous() -> PreviousResult:
+            called["n"] += 1
+            return PreviousResult(ok=True, message="⏮️ Previous track: **T0**", track_id="t0")
+
+        station = FakeStation(guild_id="999", listener_count=2)
+        cmds = build_commands(
+            db=db,
+            provider=FakeProvider(),
+            state=state,
+            radio=FakeRadioClock(),
+            stations={"999": station},
+            previous_radio=fake_previous,
+        )
+        cb = self._get_previous(cmds)
+        inter = _fake_interaction(guild_id=999)
+        await cb(inter)
+        assert called["n"] == 1
+        args, _ = inter.response.send_message.call_args
+        assert "Previous track" in str(args[0])
+
+    async def test_unavailable_when_no_previous_radio(self, db: Database, state: BotState) -> None:
+        station = FakeStation(guild_id="999", listener_count=1)
+        cmds = build_commands(
+            db=db,
+            provider=FakeProvider(),
+            state=state,
+            radio=FakeRadioClock(),
+            stations={"999": station},
+        )
+        cb = self._get_previous(cmds)
+        inter = _fake_interaction(guild_id=999)
+        await cb(inter)
+        args, kwargs = inter.response.send_message.call_args
+        assert "not available" in str(args[0])
+        assert kwargs.get("ephemeral") is True
 
 
 # ---------------------------------------------------------------------------
