@@ -29,6 +29,24 @@ class TestRefresh:
         assert stats["added"] == 0
         assert stats["updated"] == 3
 
+    def test_providers_from_config_does_not_auto_append_archive(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from file_provider.config import Config
+        from file_provider.service import _providers_from_config
+
+        monkeypatch.setenv("ARCHIVE_ORG_ITEMS", "Hawkins_Lectures_transcoded_actual_files")
+        cfg = Config(
+            db_path=str(tmp_path / "p.db"),
+            cache_path=str(tmp_path / "c"),
+            provider_order=["webdav"],
+            archive_org_items=["Hawkins_Lectures_transcoded_actual_files"],
+            gdrive_webdav_url="http://dav:8081",
+        )
+        names = [p.name for p in _providers_from_config(cfg)]
+        assert names == ["webdav"]
+        assert "archive" not in names
+
     def test_refresh_dynamic_archive_org_items(self, db, cache, fake_provider) -> None:
         s = Service(db, cache, [fake_provider])
         s.refresh_playlist(archive_org_items="item1,item2")
@@ -93,6 +111,32 @@ class TestSkipUnhealthyProviders:
         t = s.current()
         assert t.provider_used == "fake"
 
+    def test_empty_scan_keeps_existing_rows(self, db, cache, fake_provider) -> None:
+        s = Service(db, cache, [fake_provider])
+        s.refresh_playlist()
+        assert db.playlist_length() == 3
+        fake_provider.files.clear()
+        stats = s.refresh_playlist()
+        assert stats["added"] == 0
+        assert db.playlist_length() == 3
+
+    def test_unconfigured_provider_does_not_wipe_rows(self, db, cache, fake_provider) -> None:
+        s = Service(db, cache, [fake_provider])
+        s.refresh_playlist()
+        fake_provider.is_configured = lambda: False  # type: ignore[method-assign]
+        s.refresh_playlist()
+        assert db.playlist_length() == 3
+
+    def test_current_skips_failed_fetch_and_plays_next(self, db, cache) -> None:
+        from tests.file_provider.conftest import FakeProvider
+
+        fp = FakeProvider({"s1": b"a" * 4, "s2": b"b" * 4})
+        fp.fail.add("s1")
+        s = Service(db, cache, [fp])
+        s.refresh_playlist()
+        t = s.current()
+        assert t.title == "Track s2"
+
     def test_failed_fetch_marks_unhealthy(self, db, cache) -> None:
         from tests.file_provider.conftest import FakeProvider
 
@@ -144,7 +188,7 @@ class TestCurrentAndNext:
         assert before.count("s1") == fake_provider.fetches.count("s1")
 
     def test_provider_failure_raises(self, db, cache, fake_provider) -> None:
-        fake_provider.fail.add("s1")
+        fake_provider.fail.update(fake_provider.files)
         s = Service(db, cache, [fake_provider])
         s.refresh_playlist()
         with pytest.raises(ProviderFetchError):

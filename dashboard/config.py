@@ -28,6 +28,13 @@ def _env_id_list(key: str) -> frozenset[str]:
     return frozenset(x.strip() for x in os.environ.get(key, "").split(",") if x.strip())
 
 
+def _env_bool(key: str, default: bool = False) -> bool:
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(slots=True, frozen=True)
 class DashboardConfig:
     port: int
@@ -39,6 +46,7 @@ class DashboardConfig:
     discord_redirect_uri: str
     superadmin_password: str = ""
     admin_user_ids: frozenset[str] = field(default_factory=frozenset)
+    archive_gui_enabled: bool = False
 
     @property
     def oauth_configured(self) -> bool:
@@ -58,4 +66,5 @@ def load() -> DashboardConfig:
         discord_redirect_uri=_env("DISCORD_REDIRECT_URI"),
         superadmin_password=_env("SUPERADMIN_PASSWORD"),
         admin_user_ids=_env_id_list("ADMIN_USER_IDS"),
+        archive_gui_enabled=_env_bool("ARCHIVE_GUI_ENABLED", default=False),
     )

@@ -46,6 +46,12 @@ from provider.client import FileProviderClient, ProviderError, TrackResponse
 log = logging.getLogger(__name__)
 
 
+def _is_missing_track(exc: BaseException) -> bool:
+    """True when the provider 404'd a specific track id (gone from playlist)."""
+    msg = str(exc).lower()
+    return "http 404" in msg or "unknown track" in msg
+
+
 @dataclass
 class Station:
     """One Discord server the bot is actively serving.
@@ -612,13 +618,25 @@ async def _resume_or_start(
     for attempt in range(1, max_attempts + 1):
         try:
             if resume_id:
-                track = await provider.get_by_id(resume_id)
-                if not track.ready or not track.local_path:
-                    log.warning("track %s not ready — falling back to /current", resume_id)
-                    track = await provider.current()
+                try:
+                    track = await provider.get_by_id(resume_id)
+                except ProviderError as exc:
+                    if not _is_missing_track(exc):
+                        raise
+                    # Saved id was pruned (e.g. a Drive rescan). Retrying the
+                    # same 404 just keeps the radio silent — drop it and play
+                    # whatever is at the playlist cursor.
+                    log.warning("saved track %s is gone — falling back to /current", resume_id)
+                    resume_id = None
                     resume_at = 0
+                    track = await provider.current()
                 else:
-                    log.info("resuming %s @ %ds", track.title, resume_at)
+                    if not track.ready or not track.local_path:
+                        log.warning("track %s not ready — falling back to /current", resume_id)
+                        track = await provider.current()
+                        resume_at = 0
+                    else:
+                        log.info("resuming %s @ %ds", track.title, resume_at)
             else:
                 track = await provider.current()
                 log.info("starting playback: %s", track.title)
