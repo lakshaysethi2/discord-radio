@@ -118,14 +118,13 @@ class TestScan:
         assert WebDavProvider(url="").list_tracks() == []
 
     @respx.mock
-    def test_scan_survives_broken_subdir(self, provider: WebDavProvider) -> None:
+    def test_scan_fails_closed_on_broken_subdir(self, provider: WebDavProvider) -> None:
         respx.request("PROPFIND", f"{BASE}/").mock(return_value=httpx.Response(200, content=_ROOT_MS))
         respx.request("PROPFIND", f"{BASE}/Lectures2002-2011/").mock(
             return_value=httpx.Response(500, text="boom")
         )
-        tracks = provider.list_tracks()
-        # The broken subdir is skipped; files from the root still surface.
-        assert {t.source_ref for t in tracks} == {"VolumeSeries/volume-i-power-vs-force.mp4"}
+        with pytest.raises(ProviderFetchError, match="PROPFIND"):
+            provider.list_tracks()
 
     @respx.mock
     def test_scan_absolute_hrefs_and_percent_encoding(self, provider: WebDavProvider) -> None:

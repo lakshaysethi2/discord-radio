@@ -49,7 +49,7 @@ class WebDavProvider(BaseProvider):
         *,
         username: str = "",
         password: str = "",
-        http_timeout: float = 60.0,
+        http_timeout: float = 180.0,
         download_chunk_bytes: int = 64 * 1024,
         user_agent: str = "discord-radio/1.0 (+https://github.com/lakshaysethi2/discord-radio)",
     ) -> None:
@@ -93,8 +93,10 @@ class WebDavProvider(BaseProvider):
                 try:
                     entries = self._propfind(c, dir_path)
                 except Exception as exc:
-                    log.warning("webdav: PROPFIND %s failed: %s", dir_path, exc)
-                    continue
+                    # A partial listing would look "successful" to refresh and
+                    # prune every track not in the fragment (the 2026-08-19
+                    # outage: Lectures* timed out, Drive rows vanished).
+                    raise ProviderFetchError(f"PROPFIND {dir_path} failed: {exc}") from exc
                 for e in entries:
                     if e["is_dir"]:
                         if e["href"] != dir_path:
