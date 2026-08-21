@@ -5,7 +5,7 @@
     <section class="md:col-span-2 rounded-lg bg-slate-900 p-5 border border-slate-800">
       <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-2">Now Playing</h2>
       {% if track_title %}
-        <p class="text-lg font-semibold">{{ track_title }}</p>
+        <p class="text-lg font-semibold">{{ track_title | display_title }}</p>
         <p class="text-sm text-slate-400 mt-1">
           Track #{{ now.playlist_position + 1 }}
           · {{ elapsed_fmt }} elapsed

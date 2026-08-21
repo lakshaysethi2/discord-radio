@@ -54,6 +54,12 @@ TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 def _build_templates() -> Jinja2Templates:
     templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
     templates.env.filters["hms"] = queries.format_hms
+    try:
+        from bot.titles import display_title  # type: ignore
+
+        templates.env.filters["display_title"] = display_title
+    except Exception:
+        pass
     return templates
 
 
@@ -297,7 +303,9 @@ def create_app(
             try:
                 fp = await _get_provider()
                 track = await fp.get_by_id(np.track_id)
-                track_title = track.title
+                from bot.titles import display_title
+
+                track_title = display_title(track.title)
                 track_duration = track.duration_seconds
             except Exception as exc:
                 log.debug("could not fetch current track from provider: %s", exc)
