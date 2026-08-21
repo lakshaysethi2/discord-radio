@@ -12,6 +12,11 @@
           {% if track_duration %}/ {{ duration_fmt }}{% endif %}
           {% if now.is_paused %} · <span class="text-amber-400">paused</span>{% endif %}
         </p>
+        {% if track_duration %}
+        <div class="mt-3 h-1.5 w-full rounded bg-slate-800 overflow-hidden" aria-hidden="true">
+          <div class="h-full bg-indigo-500" style="width: {{ ([100, (now.playback_position_seconds * 100 // track_duration)] | min) }}%"></div>
+        </div>
+        {% endif %}
       {% else %}
         <p class="text-slate-400">Nothing playing yet.</p>
       {% endif %}
