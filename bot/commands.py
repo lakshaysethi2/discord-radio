@@ -18,6 +18,7 @@ import logging
 from typing import Any
 
 from bot.state import BotState
+from bot.titles import display_title
 from dashboard import queries
 from db.database import Database
 from provider.client import FileProviderClient
@@ -98,7 +99,7 @@ def build_commands(
 
         embed = discord.Embed(
             title="🎙️ Now Playing",
-            description=f"**{track.title}**",
+            description=f"**{display_title(track.title)}**",
             colour=discord.Colour.blurple(),
         )
         embed.add_field(name="Duration", value=_fmt_duration(track.duration_seconds))
