@@ -20,6 +20,7 @@ class TestLoad:
         assert cfg.secret_key == "secret"
         assert cfg.admin_user_ids == frozenset({"1", "2", "3"})
         assert cfg.oauth_configured is True
+        assert cfg.archive_gui_enabled is False
 
     def test_oauth_not_configured_when_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DISCORD_CLIENT_ID", raising=False)
@@ -32,3 +33,9 @@ class TestLoad:
         monkeypatch.delenv("ADMIN_USER_IDS", raising=False)
         cfg = config.load()
         assert cfg.admin_user_ids == frozenset()
+
+    def test_archive_gui_enabled_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ARCHIVE_GUI_ENABLED", "true")
+        assert config.load().archive_gui_enabled is True
+        monkeypatch.setenv("ARCHIVE_GUI_ENABLED", "0")
+        assert config.load().archive_gui_enabled is False

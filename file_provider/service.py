@@ -46,36 +46,6 @@ class PlaylistEmpty(RuntimeError):
     pass
 
 
-def _get_tv_db_path() -> Path | None:
-    import os
-
-    db_env = os.environ.get("DATABASE_PATH")
-    if db_env:
-        return Path(db_env)
-    if Path("/data/tv.db").exists():
-        return Path("/data/tv.db")
-    if Path("./data/tv.db").exists():
-        return Path("./data/tv.db")
-    return None
-
-
-def _get_tv_db_archive_items() -> list[str] | None:
-    tv_db_path = _get_tv_db_path()
-    if tv_db_path and tv_db_path.exists():
-        with contextlib.suppress(Exception):
-            import sqlite3
-
-            conn = sqlite3.connect(f"file:{tv_db_path}?mode=ro", uri=True, timeout=5.0)
-            cur = conn.cursor()
-            cur.execute("SELECT value FROM bot_state WHERE key='archive_org_items'")
-            row = cur.fetchone()
-            conn.close()
-            if row and row[0] is not None:
-                db_val = row[0].strip()
-                return [x.strip() for x in db_val.split(",") if x.strip()]
-    return None
-
-
 _MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
@@ -164,11 +134,10 @@ class Service:
         ``gdrive_webdav_url``/``gdrive_webdav_path`` let the dashboard repoint
         the webdav provider at runtime (same pattern as archive_org_items).
         """
-        if archive_org_items is None:
-            db_items = _get_tv_db_archive_items()
-            if db_items is not None:
-                archive_org_items = db_items
-
+        # Only touch archive.org when the caller explicitly passed item ids
+        # (dashboard form). Never pull ARCHIVE_ORG_ITEMS out of tv.db on a
+        # Drive rescan — that used to inject archive mid-refresh, prune an
+        # empty webdav result, and leave the radio on archive.org 503s.
         if archive_org_items is not None:
             if isinstance(archive_org_items, str):
                 items = [x.strip() for x in archive_org_items.split(",") if x.strip()]
@@ -217,8 +186,9 @@ class Service:
         errors: dict[str, str] = {}
         for provider in self.providers:
             if not provider.is_configured():
+                # Keep existing rows. An empty URL mid-outage must not wipe
+                # the Drive playlist the radio is currently playing.
                 log.info("skip provider %s: not configured", provider.name)
-                self.db.prune_provider_tracks(provider.name, set())
                 continue
             try:
                 found = provider.list_tracks()
@@ -226,6 +196,15 @@ class Service:
                 log.exception("provider %s scan failed", provider.name)
                 self.db.mark_provider(provider.name, healthy=False, error=str(exc))
                 errors[provider.name] = str(exc)
+                continue
+            if not found:
+                # list_tracks() returning [] used to prune every row for this
+                # provider and left the radio on archive.org 503s. Keep the
+                # last good playlist until a scan actually finds files.
+                log.warning(
+                    "provider %s scan returned 0 tracks — keeping existing rows",
+                    provider.name,
+                )
                 continue
             self.db.mark_provider(provider.name, healthy=True)
             rows = self._provider_tracks_to_rows(provider, found)
@@ -350,17 +329,76 @@ class Service:
     # ----------------------------------------------------------- accessors
     def current(self) -> TrackPayload:
         with self._lock:
-            row = self._next_playable_row()
-            if row is None:
+            n = self.db.playlist_length()
+            if n == 0:
                 raise PlaylistEmpty("playlist is empty")
-            payload = self._ensure_and_wrap(row)
-            self._kick_prefetch()
-            return payload
+            last_exc: Exception | None = None
+            for _ in range(n):
+                row = self._next_playable_row()
+                if row is None:
+                    break
+                try:
+                    payload = self._ensure_and_wrap(row)
+                    self._kick_prefetch()
+                    return payload
+                except ProviderFetchError as exc:
+                    last_exc = exc
+                    log.warning("skip %s: fetch failed: %s", row["track_id"], exc)
+                    self.db.advance_cursor(1)
+            if last_exc is not None:
+                raise last_exc
+            raise PlaylistEmpty("playlist is empty")
 
     def next(self) -> TrackPayload:
         with self._lock:
             self.db.advance_cursor(1)
             return self.current()
+
+    def previous(self) -> TrackPayload:
+        """Step the cursor back one playable track (wraps).
+
+        Walks backward so an unhealthy or unfetchable row does not bounce
+        the radio forward again via ``current()``.
+        """
+        with self._lock:
+            n = self.db.playlist_length()
+            if n == 0:
+                raise PlaylistEmpty("playlist is empty")
+            self.db.advance_cursor(-1)
+            fallback_pos = self.db.get_cursor()
+            last_exc: Exception | None = None
+            for i in range(n):
+                row = self.db.track_at(self.db.get_cursor())
+                if row is None:
+                    break
+                if self.db.provider_healthy(row["provider"]):
+                    try:
+                        payload = self._ensure_and_wrap(row)
+                        self._kick_prefetch()
+                        return payload
+                    except ProviderFetchError as exc:
+                        last_exc = exc
+                        log.warning("skip %s: fetch failed: %s", row["track_id"], exc)
+                else:
+                    log.info(
+                        "skip %s: provider %s unhealthy", row["track_id"], row["provider"]
+                    )
+                if i < n - 1:
+                    self.db.advance_cursor(-1)
+            # Every row skipped: play the first step back anyway (cached
+            # files still work when the provider is marked unhealthy).
+            self.db.set_cursor(fallback_pos)
+            row = self.db.track_at(fallback_pos)
+            if row is not None:
+                try:
+                    payload = self._ensure_and_wrap(row)
+                    self._kick_prefetch()
+                    return payload
+                except ProviderFetchError as exc:
+                    last_exc = exc
+            if last_exc is not None:
+                raise last_exc
+            raise PlaylistEmpty("playlist is empty")
 
     def _next_playable_row(self) -> sqlite3.Row | None:
         """Row at the cursor, skipping tracks whose provider is unhealthy.
@@ -588,12 +626,9 @@ def _providers_from_config(config: Config) -> list[BaseProvider]:
     """Instantiate providers per FILE_PROVIDER_ORDER."""
     from file_provider.providers.local import LocalProvider
 
-    archive_items = _get_tv_db_archive_items()
-    if archive_items is None:
-        archive_items = list(config.archive_org_items)
+    archive_items = list(config.archive_org_items)
 
     out: list[BaseProvider] = []
-    has_archive = "archive" in config.provider_order
     for name in config.provider_order:
         if name == "local":
             out.append(LocalProvider(config.local_media_path))
@@ -626,9 +661,6 @@ def _providers_from_config(config: Config) -> list[BaseProvider]:
         else:
             log.warning("unknown provider '%s' in FILE_PROVIDER_ORDER", name)
 
-    if not has_archive and archive_items:
-        from file_provider.providers.archive import ArchiveOrgProvider
-
-        out.append(ArchiveOrgProvider(item_ids=archive_items))
-
+    # Do not auto-append archive.org. Drive (webdav) is the radio source;
+    # archive only loads when it is listed in FILE_PROVIDER_ORDER.
     return out

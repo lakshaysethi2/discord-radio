@@ -3,6 +3,7 @@
 Commands:
     /current     — Show the currently playing track (public, in-channel).
     /next        — Skip to the next track in the queue.
+    /previous    — Skip to the previous track in the queue.
     /leaderboard — Show listening leaderboard (ephemeral, only visible to caller).
 
 Design:
@@ -58,6 +59,7 @@ def build_commands(
     stations: dict[str, Any],
     forward_radio: Any | None = None,  # async (minutes: float) -> ForwardResult
     rewind_radio: Any | None = None,  # async (minutes: float) -> RewindResult
+    previous_radio: Any | None = None,  # async () -> PreviousResult
 ) -> list[tuple[str, str, Any]]:
     """Return (name, description, callback) tuples for slash-command registration.
 
@@ -67,6 +69,7 @@ def build_commands(
     (it needs the shared advance lock and admin-pause flag, which only exist
     inside ``run()``); when None the command replies that it's unavailable.
     ``rewind_radio`` is the same for /rewind.
+    ``previous_radio`` is the same for /previous (one track back).
     """
 
     async def current_command(interaction) -> None:
@@ -162,6 +165,26 @@ def build_commands(
 
         await interaction.response.send_message("⏭️ Skipping to the next track…")
 
+    async def previous_command(interaction) -> None:
+        """Handle /previous — skip to the previous track."""
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        active_stations = [
+            s for s in stations.values()
+            if s.guild_id == guild_id and s.listener_count > 0
+        ]
+        if not active_stations:
+            await interaction.response.send_message(
+                "⏮️ No active listeners in this server to skip for.", ephemeral=True
+            )
+            return
+        if previous_radio is None:
+            await interaction.response.send_message(
+                "⚠️ /previous is not available right now.", ephemeral=True
+            )
+            return
+        result = await previous_radio()
+        await interaction.response.send_message(result.message)
+
     async def forward_command(interaction, minutes: float) -> None:
         """Handle /forward — skip the shared radio ahead by N minutes.
 
@@ -205,6 +228,7 @@ def build_commands(
     return [
         ("current", "Show the currently playing track", current_command),
         ("next", "Skip to the next track in the queue", next_command),
+        ("previous", "Skip to the previous track in the queue", previous_command),
         ("rewind", "Rewind the radio by N minutes", rewind_command),
         ("forward", "Skip the radio forward by N minutes", forward_command),
         ("leaderboard", "Show listening time leaderboard", leaderboard_command),

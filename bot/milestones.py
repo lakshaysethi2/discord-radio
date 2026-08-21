@@ -18,6 +18,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from bot.titles import display_title
 from db.database import Database
 from db.guilds import apply_guild_config, get_guild_config
 from db.models import MILESTONES
@@ -179,7 +180,7 @@ class NowPlaying:
         # Playlist size — best-effort read (bot's DB doesn't have it, so leave blank).
         embed = discord.Embed(
             title="🎙️ Now Playing",
-            description=f"**{track.title}**",
+            description=f"**{display_title(track.title)}**",
             colour=discord.Colour.blurple(),
         )
         embed.add_field(name="Duration", value=self._fmt_duration(track.duration_seconds))

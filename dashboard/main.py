@@ -486,6 +486,7 @@ def create_app(
                 "current_page": current_page,
                 "error": error,
                 "archive_org_items": archive_org_items,
+                "archive_gui_enabled": config.archive_gui_enabled,
                 "gdrive_webdav_url": gdrive_webdav_url,
                 "gdrive_webdav_path": gdrive_webdav_path,
                 "csrf": sess.get("csrf", ""),
@@ -547,6 +548,8 @@ def create_app(
         csrf: str = Form(""),
         user: auth.SessionUser = Depends(_require_admin),
     ) -> Response:
+        if not config.archive_gui_enabled:
+            raise HTTPException(status_code=404, detail="archive.org GUI is disabled")
         sess = _get_session(request) or {}
         if not sess.get("csrf") or not hmac.compare_digest(sess["csrf"], csrf):
             raise HTTPException(status_code=403, detail="invalid CSRF token")

@@ -98,6 +98,19 @@ class TestResumeOrStart:
         )
         assert len(player.started) == 1
 
+    async def test_missing_saved_track_falls_back_to_current(self, state: BotState) -> None:
+        state.current_track_id = "webdav_gone"
+        state.playback_position_seconds = 99
+        player = FakePlayer()
+        prov = ScriptedProvider(
+            current_seq=[make_track(title="NextPlayable")],
+            by_id_seq=[ProviderError("GET /tracks/webdav_gone -> HTTP 404: unknown track")],
+        )
+        await _resume_or_start(player, prov, state, initial_backoff=0.001)  # type: ignore[arg-type]
+        assert len(player.started) == 1
+        assert player.started[0][0].title == "NextPlayable"
+        assert player.started[0][1] == 0
+
     async def test_gives_up_after_max_attempts(self, state: BotState) -> None:
         player = FakePlayer()
         prov = ScriptedProvider([ProviderError("nope")] * 5)

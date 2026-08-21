@@ -38,12 +38,19 @@ from bot.player import Player
 from bot.presence import Transition, VoiceEvent, should_pause, should_resume
 from bot.scheduler import Scheduler
 from bot.state import BotState, GuildScopedState
+from bot.titles import display_title
 from bot.tracker import SessionTracker
 from db import guilds as guilds_db
 from db.database import Database
 from provider.client import FileProviderClient, ProviderError, TrackResponse
 
 log = logging.getLogger(__name__)
+
+
+def _is_missing_track(exc: BaseException) -> bool:
+    """True when the provider 404'd a specific track id (gone from playlist)."""
+    msg = str(exc).lower()
+    return "http 404" in msg or "unknown track" in msg
 
 
 @dataclass
@@ -221,6 +228,15 @@ class RewindResult:
     track_changed: bool = False
 
 
+@dataclass
+class PreviousResult:
+    """Outcome of a ``/previous`` skip, ready to send as the interaction reply."""
+
+    message: str
+    ok: bool = False
+    track_id: str = ""
+
+
 # Upper bound on how many tracks one /forward skip may walk past. Guards
 # against a pathological provider.next() loop; if the cap is hit the remaining
 # overflow is left to the normal end-of-track advance instead of blocking the
@@ -394,7 +410,7 @@ async def forward_radio(
         message = (
             f"⏩ Skipped forward {_fmt_minutes(float(minutes))} — "
             f"now at {_fmt_clock(final_offset)}"
-            + (f" on **{final_track.title}**" if track_changed else "")
+            + (f" on **{display_title(final_track.title)}**" if track_changed else "")
             + (", radio is paused." if paused else ".")
         )
         return ForwardResult(
@@ -494,6 +510,59 @@ async def rewind_radio(
             message=message,
             new_position_seconds=int(final_offset),
             track_changed=False,
+        )
+
+
+async def previous_radio(
+    *,
+    provider: FileProviderClient,
+    state: BotState,
+    radio: RadioClock,
+    stations: dict[str, Station],
+    advance_lock: asyncio.Lock,
+    admin_paused: bool,
+) -> PreviousResult:
+    """Step the shared radio back one track.
+
+    Backs the ``/previous`` slash command — the track-level mirror of
+    ``/next``. Runs under ``advance_lock`` so it cannot race a natural
+    end-of-track advance. The new track starts at offset 0 on every
+    listening station.
+    """
+    if not any(s.listener_count > 0 for s in stations.values()):
+        return PreviousResult(
+            ok=False, message="⏮️ No active listeners in this radio to skip for."
+        )
+
+    async with advance_lock:
+        try:
+            track = await provider.previous()
+        except Exception as exc:
+            log.warning("previous: provider failed: %s", exc)
+            return PreviousResult(
+                ok=False, message="⚠️ Could not reach the file provider. Try again in a moment."
+            )
+        if not track.ready or not track.local_path:
+            return PreviousResult(
+                ok=False, message="⚠️ That track isn't ready yet — try again in a moment."
+            )
+
+        state.current_track_id = track.track_id
+        radio.reset(0)
+        state.playback_position_seconds = 0
+        sync_radio_state(stations, radio, state, admin_paused=admin_paused)
+        for st in stations.values():
+            try:
+                if radio.is_playing() and st.listener_count > 0:
+                    await st.player.start(track)
+                await st.now_playing.post_or_replace(track)
+            except Exception as exc:
+                log.warning("station %s previous restart failed: %s", st.guild_id, exc)
+
+        return PreviousResult(
+            ok=True,
+            message=f"⏮️ Previous track: **{display_title(track.title)}**",
+            track_id=track.track_id,
         )
 
 
@@ -612,13 +681,25 @@ async def _resume_or_start(
     for attempt in range(1, max_attempts + 1):
         try:
             if resume_id:
-                track = await provider.get_by_id(resume_id)
-                if not track.ready or not track.local_path:
-                    log.warning("track %s not ready — falling back to /current", resume_id)
-                    track = await provider.current()
+                try:
+                    track = await provider.get_by_id(resume_id)
+                except ProviderError as exc:
+                    if not _is_missing_track(exc):
+                        raise
+                    # Saved id was pruned (e.g. a Drive rescan). Retrying the
+                    # same 404 just keeps the radio silent — drop it and play
+                    # whatever is at the playlist cursor.
+                    log.warning("saved track %s is gone — falling back to /current", resume_id)
+                    resume_id = None
                     resume_at = 0
+                    track = await provider.current()
                 else:
-                    log.info("resuming %s @ %ds", track.title, resume_at)
+                    if not track.ready or not track.local_path:
+                        log.warning("track %s not ready — falling back to /current", resume_id)
+                        track = await provider.current()
+                        resume_at = 0
+                    else:
+                        log.info("resuming %s @ %ds", track.title, resume_at)
             else:
                 track = await provider.current()
                 log.info("starting playback: %s", track.title)
@@ -854,6 +935,17 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
         """
         return await rewind_radio(
             minutes=minutes,
+            provider=provider,
+            state=state,
+            radio=radio,
+            stations=stations,
+            advance_lock=_advance_lock,
+            admin_paused=admin_paused,
+        )
+
+    async def _previous_radio() -> PreviousResult:
+        """Slash-command hook for /previous — see previous_radio()."""
+        return await previous_radio(
             provider=provider,
             state=state,
             radio=radio,
@@ -1132,6 +1224,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 stations=stations,
                 forward_radio=_forward_radio,
                 rewind_radio=_rewind_radio,
+                previous_radio=_previous_radio,
             ):
                 tree.command(name=name, description=desc)(cb)
             try:

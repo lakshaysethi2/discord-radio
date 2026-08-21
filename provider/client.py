@@ -171,6 +171,17 @@ class FileProviderClient:
             raise ProviderError(f"non-JSON response from /next: {resp.text[:200]}") from exc
         return TrackResponse.from_json(data)
 
+    async def previous(self) -> TrackResponse:
+        """Step the playlist back one track and return it."""
+        resp = await self._request("POST", "/previous")
+        if resp.status_code != 200:
+            raise ProviderError(f"POST /previous -> HTTP {resp.status_code}: {resp.text[:200]}")
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise ProviderError(f"non-JSON response from /previous: {resp.text[:200]}") from exc
+        return TrackResponse.from_json(data)
+
     async def peek(self, count: int = 5) -> list[TrackResponse]:
         """Peek `count` upcoming tracks without advancing (for /queue view)."""
         if count <= 0:

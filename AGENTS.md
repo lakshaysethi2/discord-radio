@@ -6,7 +6,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Architecture pointers
 
-- Slash commands live in `bot/commands.py`: `build_commands(db, provider, state, radio, stations)` returns `(name, desc, callback)` tuples registered + globally synced in `bot/main.py`'s `on_ready`. Command callbacks that need run()-scoped state (the shared `_advance_lock`, the live `admin_paused` flag) receive it injected as a callable param — see `/forward`'s `forward_radio` and `/rewind`'s `rewind_radio` for the pattern (the two are exact mirrors).
+- Slash commands live in `bot/commands.py`: `build_commands(db, provider, state, radio, stations)` returns `(name, desc, callback)` tuples registered + globally synced in `bot/main.py`'s `on_ready`. Command callbacks that need run()-scoped state (the shared `_advance_lock`, the live `admin_paused` flag) receive it injected as a callable param — see `/forward`'s `forward_radio` and `/rewind`'s `rewind_radio` (exact mirrors) and `/previous`'s `previous_radio` (track-level mirror of `/next`).
 - One shared playback cursor: `RadioClock` in `bot/main.py` owns the global position (`seek`/`start`/`pause`/`reset`); every guild's player just joins at `radio.position()`. Any position-changing mutation must run under `_advance_lock` to avoid racing the natural end-of-track advance (`_advance_and_announce`).
 - Scheduler (dashboard) commands are handled by `_handle_command` in `run()`; slash commands are separate.
 
