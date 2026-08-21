@@ -28,14 +28,18 @@ def display_title(raw: str | None) -> str:
     if not parts:
         return "Unknown track"
     out: list[str] = []
-    for i, part in enumerate(parts):
-        low = part.lower()
-        if _ROMAN_RE.fullmatch(part):
-            out.append(part.upper())
-        elif i > 0 and low in _SMALL:
-            out.append(low)
-        elif part.isupper() and len(part) <= 4:
-            out.append(part)
-        else:
-            out.append(part[:1].upper() + part[1:].lower())
+    global_idx = 0
+    for part in parts:
+        # ponytail: split on spaces so "Test Track" keeps both words titled
+        for word in part.split():
+            low = word.lower()
+            if _ROMAN_RE.fullmatch(word):
+                out.append(word.upper())
+            elif global_idx > 0 and low in _SMALL:
+                out.append(low)
+            elif word.isupper() and len(word) <= 4:
+                out.append(word)
+            else:
+                out.append(word[:1].upper() + word[1:].lower())
+            global_idx += 1
     return " ".join(out)
