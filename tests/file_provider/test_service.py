@@ -131,6 +131,11 @@ class TestSkipUnhealthyProviders:
         s = Service(db, cache, [fake_provider])
         s.refresh_playlist()
         first = s.current()
+        # Join prefetch so its mark_provider(healthy=True) doesn't race
+        # with the explicit unhealthy mark below (flakes when run after
+        # other tests that prime timing).
+        if s._prefetch_thread is not None:
+            s._prefetch_thread.join(timeout=2)
         db.mark_provider("fake", healthy=False)
         t = s.previous()
         assert t.track_id != first.track_id
