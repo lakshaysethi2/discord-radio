@@ -13,7 +13,7 @@
           {% if now.is_paused %} · <span class="text-amber-400">paused</span>{% endif %}
         </p>
         {% if track_duration %}
-        <div class="mt-3 h-1.5 w-full rounded bg-slate-800 overflow-hidden" aria-hidden="true">
+        <div class="mt-3 h-1.5 w-full rounded bg-slate-800 overflow-hidden" role="progressbar" aria-valuemin="0" aria-valuemax="{{ track_duration }}" aria-valuenow="{{ now.playback_position_seconds }}" aria-label="Playback progress">
           <div id="progress-bar" class="h-full bg-indigo-500" style="width: {{ ([100, (now.playback_position_seconds * 100 // track_duration)] | min) }}%"></div>
         </div>
         {% endif %}
