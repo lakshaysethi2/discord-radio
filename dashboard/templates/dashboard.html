@@ -14,7 +14,7 @@
         </p>
         {% if track_duration %}
         <div class="mt-3 h-1.5 w-full rounded bg-slate-800 overflow-hidden" aria-hidden="true">
-          <div class="h-full bg-indigo-500" style="width: {{ ([100, (now.playback_position_seconds * 100 // track_duration)] | min) }}%"></div>
+          <div id="progress-bar" class="h-full bg-indigo-500" style="width: {{ ([100, (now.playback_position_seconds * 100 // track_duration)] | min) }}%"></div>
         </div>
         {% endif %}
       {% else %}
@@ -64,5 +64,9 @@
       <p class="mt-3 text-xs text-emerald-400">{{ command_flash }}</p>
     {% endif %}
   </section>
+  {% if track_duration %}
+  <script>(function(){var bar=document.getElementById('progress-bar');if(!bar)return;var pos={{ now.playback_position_seconds }},dur={{ track_duration }},paused={{ 'true' if now.is_paused else 'false' }};if(paused)return;function tick(){pos+=1;var pct=Math.min(100,pos*100/dur);bar.style.width=pct+'%';if(pos>=dur)setTimeout(function(){location.reload()},800);};setInterval(tick,1000);var remaining=Math.max(5,(dur-pos))*1000;setTimeout(function(){location.reload()},remaining+1200);})()</script>
+  {% else %}
   <script>setTimeout(function(){location.reload()},30000)</script>
+  {% endif %}
 {% endblock %}
