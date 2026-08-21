@@ -124,6 +124,7 @@ services:
       PYTHONPATH: /app
       HOME: /tmp  # numeric uid without a homedir → point HOME somewhere writable
       RUFF_CACHE_DIR: /tmp/ruff_cache
+      PYTEST_ADDOPTS: "-o cache_dir=/tmp/pytest_cache"
     entrypoint: ["/usr/bin/tini", "--"]
     command: ["python", "-m", "pytest", "-q"]
 
