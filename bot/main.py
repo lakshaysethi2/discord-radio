@@ -847,11 +847,32 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 return f"error: {exc}"
         if not stations:
             return "error: no servers configured"
-        if command == "skip":
+        if command in ("skip", "next"):
             for st in stations.values():
                 if st.listener_count > 0:
                     await st.player.skip()
             return "ok:skipped"
+        if command == "previous":
+            # Track-level Previous — mirror of /previous slash command.
+            async with _advance_lock:
+                try:
+                    track = await provider.previous()
+                except Exception as exc:
+                    return f"error: previous failed: {exc}"
+                if not track.ready or not track.local_path:
+                    return f"error: track {track.track_id} not ready"
+                state.current_track_id = track.track_id
+                radio.reset(0)
+                state.playback_position_seconds = 0
+                sync_radio_state(stations, radio, state, admin_paused=admin_paused)
+                for st in stations.values():
+                    try:
+                        if radio.is_playing() and st.listener_count > 0:
+                            await st.player.start(track)
+                        await st.now_playing.post_or_replace(track)
+                    except Exception as exc:
+                        log.warning("station %s previous failed: %s", st.guild_id, exc)
+            return f"ok:previous:{track.track_id}"
         if command == "pause":
             admin_paused = True
             for st in stations.values():

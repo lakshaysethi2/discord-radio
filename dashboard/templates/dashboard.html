@@ -42,7 +42,8 @@
     <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-3">Controls</h2>
     <form method="post" action="/controls" class="flex flex-wrap gap-2 text-sm">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button name="action" value="skip"    class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Skip</button>
+      <button name="action" value="previous" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">⏮ Previous</button>
+      <button name="action" value="skip"    class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Next ⏭</button>
       <button name="action" value="pause"   class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Pause</button>
       <button name="action" value="resume"  class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Resume</button>
       <button name="action" value="refresh_playlist" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Rescan playlist</button>

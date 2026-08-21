@@ -29,6 +29,8 @@ from db.database import Database
 VALID_COMMANDS = frozenset(
     {
         "skip",
+        "next",
+        "previous",
         "pause",
         "resume",
         "refresh_playlist",
