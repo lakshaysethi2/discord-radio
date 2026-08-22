@@ -17,8 +17,10 @@
   <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-2">GDrive Source (rclone serve webdav)</h2>
   <form action="/controls/gdrive_source" method="post" class="flex flex-wrap items-center gap-3 text-sm">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <input type="text" name="gdrive_webdav_url" value="{{ gdrive_webdav_url }}" placeholder="http://host:8081" class="px-3 py-1.5 rounded bg-slate-950 border border-slate-700 text-slate-200">
-    <input type="text" name="gdrive_webdav_path" value="{{ gdrive_webdav_path }}" placeholder="/" class="px-3 py-1.5 rounded bg-slate-950 border border-slate-700 text-slate-200">
+    <label for="gdrive_webdav_url" class="sr-only">WebDAV URL</label>
+    <input id="gdrive_webdav_url" type="text" name="gdrive_webdav_url" value="{{ gdrive_webdav_url }}" placeholder="http://host:8081" aria-label="WebDAV URL" class="px-3 py-1.5 rounded bg-slate-950 border border-slate-700 text-slate-200">
+    <label for="gdrive_webdav_path" class="sr-only">Library path</label>
+    <input id="gdrive_webdav_path" type="text" name="gdrive_webdav_path" value="{{ gdrive_webdav_path }}" placeholder="/" aria-label="Library path" class="px-3 py-1.5 rounded bg-slate-950 border border-slate-700 text-slate-200">
     <button class="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-medium">Save &amp; Rescan</button>
   </form>
   <p class="mt-1.5 text-xs text-slate-500">WebDAV endpoint serving the Drive library (e.g. <code>rclone serve webdav gdrive:mother-of-all-torrents --addr :8081</code>) and the library sub-path to scan.</p>
@@ -28,7 +30,8 @@
   <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-2">Archive.org Sources (ARCHIVE_ORG_ITEMS)</h2>
   <form action="/controls/archive_items" method="post" class="flex flex-wrap items-center gap-3 text-sm">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <input type="text" name="archive_org_items" value="{{ archive_org_items }}" placeholder="e.g. Hawkins_Lectures_transcoded_actual_files" class="grow px-3 py-1.5 rounded bg-slate-950 border border-slate-700 text-slate-200">
+    <label for="archive_org_items" class="sr-only">Archive.org item IDs</label>
+    <input id="archive_org_items" type="text" name="archive_org_items" value="{{ archive_org_items }}" placeholder="e.g. Hawkins_Lectures_transcoded_actual_files" aria-label="Archive.org item IDs" class="grow px-3 py-1.5 rounded bg-slate-950 border border-slate-700 text-slate-200">
     <button class="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-medium">Save &amp; Rescan</button>
   </form>
   <p class="mt-1.5 text-xs text-slate-500">Comma-separated Internet Archive collection/item IDs (e.g. Hawkins_Lectures_transcoded_actual_files). Tracks are scanned and loaded directly into the playlist queue.</p>
