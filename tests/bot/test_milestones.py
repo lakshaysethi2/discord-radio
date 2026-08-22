@@ -85,9 +85,16 @@ class FakeChannel:
 @dataclass
 class FakeClient:
     channels: dict = field(default_factory=dict)
+    fetch_channels: dict = field(default_factory=dict)
 
     def get_channel(self, cid: int):
         return self.channels.get(cid)
+
+    async def fetch_channel(self, cid: int):
+        ch = self.fetch_channels.get(cid)
+        if ch is None:
+            raise LookupError(cid)  # stand-in for discord.NotFound
+        return ch
 
 
 class TestAnnouncer:
@@ -138,6 +145,18 @@ class TestAnnouncer:
         # Flag flipped even though we couldn't send.
         row = db.fetchone("SELECT milestone_5h FROM user_totals WHERE user_id='u1'")
         assert row["milestone_5h"] == 1
+
+    async def test_cache_miss_falls_back_to_fetch(self, db: Database) -> None:
+        """Channel missing from cache but still existing → fetch fallback sends."""
+        _seed(db, "u1", alltime_seconds=5 * 3600)
+        channel = FakeChannel()
+        client = FakeClient(channels={}, fetch_channels={42: channel})
+        ann = MilestoneAnnouncer(
+            client=client, text_channel_id=42, db=db, guild_id="1"
+        )
+        got = await ann.check_and_announce("u1")
+        assert len(got) == 1
+        assert len(channel.sent) == 1
 
     async def test_idempotent_after_flip(self, db: Database) -> None:
         _seed(db, "u1", alltime_seconds=5 * 3600)

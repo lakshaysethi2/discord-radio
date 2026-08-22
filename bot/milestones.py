@@ -26,6 +26,24 @@ from db.models import MILESTONES
 log = logging.getLogger(__name__)
 
 
+async def find_channel(client: Any, channel_id: int | None):
+    """Cache lookup with one API-fetch fallback.
+
+    ``get_channel`` misses happen transiently (gateway reconnects, partial
+    cache) even for channels that still exist — without the fetch fallback
+    the Now Playing embed / milestone shout is silently skipped.
+    """
+    if channel_id is None:
+        return None
+    ch = client.get_channel(channel_id)
+    if ch is None:
+        try:
+            ch = await client.fetch_channel(channel_id)
+        except Exception:  # deleted channel, missing access, network flake
+            return None
+    return ch
+
+
 @dataclass(slots=True, frozen=True)
 class Milestone:
     user_id: str
@@ -89,7 +107,7 @@ class MilestoneAnnouncer:
         milestones = self.checker.check_user(user_id)
         if not milestones:
             return []
-        channel = self.client.get_channel(self.text_channel_id)
+        channel = await find_channel(self.client, self.text_channel_id)
         if channel is None:
             log.warning(
                 "cannot announce milestones: text channel %s not found", self.text_channel_id
@@ -164,7 +182,7 @@ class NowPlaying:
         if self._update_task and not self._update_task.done():
             self._update_task.cancel()
 
-        channel = self.client.get_channel(self.text_channel_id)
+        channel = await find_channel(self.client, self.text_channel_id)
         if channel is None:
             log.warning("cannot post Now Playing: text channel not found")
             return
@@ -217,7 +235,7 @@ class NowPlaying:
         prev_id = self.state.now_playing_message_id
         if not prev_id:
             return
-        channel = self.client.get_channel(self.text_channel_id)
+        channel = await find_channel(self.client, self.text_channel_id)
         if channel is None:
             return
         try:
