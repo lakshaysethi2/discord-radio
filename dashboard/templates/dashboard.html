@@ -45,7 +45,7 @@
       <button name="action" value="previous" aria-label="Go to previous track" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600" title="Go to previous track — affects everyone listening">⏮ Previous</button>
       <button name="action" value="skip" aria-label="Skip to next track"   class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600" title="Skip to next track — affects everyone listening">Next ⏭</button>
       {% if now.is_paused %}<button name="action" value="resume" aria-label="Resume playback" class="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600" title="Resume playback for everyone listening">▶ Resume</button>{% else %}<button name="action" value="pause" aria-label="Pause playback" class="px-3 py-1.5 rounded bg-amber-700 hover:bg-amber-600" title="Pause playback for everyone listening">⏸ Pause</button>{% endif %}
-      <button name="action" value="refresh_playlist" aria-label="Rescan playlist" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Rescan playlist</button>
+      <button name="action" value="refresh_playlist" aria-label="Rescan playlist" title="Rescan library for new tracks" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Rescan playlist</button>
     </form>
     <form method="post" action="/controls/volume" class="mt-4 flex items-center gap-2 text-sm">
       <input type="hidden" name="csrf" value="{{ csrf }}">
