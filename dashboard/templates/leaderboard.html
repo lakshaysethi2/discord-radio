@@ -4,9 +4,9 @@
   <div class="flex items-center gap-3 mb-4">
     <h1 class="text-lg font-semibold">Leaderboard</h1>
     <div class="flex text-xs rounded overflow-hidden border border-slate-800">
-      <a href="/leaderboard?period=alltime"
+      <a href="/leaderboard?period=alltime" {% if period == 'alltime' %}aria-current="page"{% endif %}
          class="px-3 py-1.5 {% if period == 'alltime' %}bg-slate-700{% else %}bg-slate-900 hover:bg-slate-800{% endif %}">All-time</a>
-      <a href="/leaderboard?period=monthly"
+      <a href="/leaderboard?period=monthly" {% if period == 'monthly' %}aria-current="page"{% endif %}
          class="px-3 py-1.5 {% if period == 'monthly' %}bg-slate-700{% else %}bg-slate-900 hover:bg-slate-800{% endif %}">This month</a>
     </div>
   </div>
