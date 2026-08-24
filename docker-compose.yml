@@ -47,6 +47,27 @@ services:
       start_period: 15s
       retries: 3
 
+  # Restart the shared hawkins-library rclone sidecar if it dies. The radio
+  # cannot fetch Drive tracks without http://rclone-webdav:8081.
+  rclone-guard:
+    image: docker:cli
+    container_name: tvbot-rclone-guard
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "watching rclone-serve"
+        while true; do
+          st=$$(docker inspect -f '{{.State.Status}}' rclone-serve 2>/dev/null || echo missing)
+          if [ "$$st" != "running" ]; then
+            echo "rclone-serve is $$st — docker start"
+            docker start rclone-serve || true
+          fi
+          sleep 30
+        done
+
   bot:
     build:
       context: .

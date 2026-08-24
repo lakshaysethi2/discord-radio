@@ -371,7 +371,8 @@ class Service:
                 row = self.db.track_at(self.db.get_cursor())
                 if row is None:
                     break
-                if self.db.provider_healthy(row["provider"]):
+                reason = self._skip_unplayable_reason(row)
+                if reason is None:
                     try:
                         payload = self._ensure_and_wrap(row)
                         self._kick_prefetch()
@@ -380,9 +381,7 @@ class Service:
                         last_exc = exc
                         log.warning("skip %s: fetch failed: %s", row["track_id"], exc)
                 else:
-                    log.info(
-                        "skip %s: provider %s unhealthy", row["track_id"], row["provider"]
-                    )
+                    log.info("skip %s: %s", row["track_id"], reason)
                 if i < n - 1:
                     self.db.advance_cursor(-1)
             # Every row skipped: play the first step back anyway (cached
@@ -400,12 +399,25 @@ class Service:
                 raise last_exc
             raise PlaylistEmpty("playlist is empty")
 
+    def _provider_loaded(self, name: str) -> bool:
+        return name in self._provider_by_name
+
+    def _skip_unplayable_reason(self, row) -> str | None:
+        """Why this row should be skipped, or None if we should try to fetch it."""
+        name = row["provider"]
+        if not self._provider_loaded(name):
+            self.db.mark_provider(name, healthy=False, error=f"unknown provider '{name}'")
+            return f"provider {name} not loaded"
+        if not self.db.provider_healthy(name):
+            return f"provider {name} unhealthy"
+        return None
+
     def _next_playable_row(self) -> sqlite3.Row | None:
-        """Row at the cursor, skipping tracks whose provider is unhealthy.
+        """Row at the cursor, skipping tracks whose provider is unloaded/unhealthy.
 
         Skips at most one full lap of the playlist so a mostly-down provider
         doesn't make the radio loop forever; if every row's provider is
-        unhealthy the cursor row itself is returned and the fetch attempt
+        unusable the cursor row itself is returned and the fetch attempt
         surfaces the failure.
         """
         n = self.db.playlist_length()
@@ -415,11 +427,10 @@ class Service:
             row = self.db.track_at(self.db.get_cursor())
             if row is None:
                 return None
-            if self.db.provider_healthy(row["provider"]):
+            reason = self._skip_unplayable_reason(row)
+            if reason is None:
                 return row
-            log.info(
-                "skip %s: provider %s unhealthy", row["track_id"], row["provider"]
-            )
+            log.info("skip %s: %s", row["track_id"], reason)
             self.db.advance_cursor(1)
         return self.db.track_at(self.db.get_cursor())
 
@@ -510,7 +521,9 @@ class Service:
         """
         provider = self._provider_by_name.get(row["provider"])
         if provider is None:
-            raise ProviderFetchError(f"unknown provider '{row['provider']}'")
+            name = row["provider"]
+            self.db.mark_provider(name, healthy=False, error=f"unknown provider '{name}'")
+            raise ProviderFetchError(f"unknown provider '{name}'")
 
         target = self.cache.path_for(row["track_id"])
         cached = self.cache.get(row["track_id"])
@@ -661,6 +674,12 @@ def _providers_from_config(config: Config) -> list[BaseProvider]:
         else:
             log.warning("unknown provider '%s' in FILE_PROVIDER_ORDER", name)
 
-    # Do not auto-append archive.org. Drive (webdav) is the radio source;
-    # archive only loads when it is listed in FILE_PROVIDER_ORDER.
+    # Drive is primary; archive.org is the fallback for leftover playlist rows
+    # when ARCHIVE_ORG_ITEMS is set. Omitting it from FILE_PROVIDER_ORDER used
+    # to 502-loop the radio (`unknown provider 'archive'`) until silence.
+    if archive_items and not any(p.name == "archive" for p in out):
+        from file_provider.providers.archive import ArchiveOrgProvider
+
+        log.info("auto-appending archive.org fallback (ARCHIVE_ORG_ITEMS is set)")
+        out.append(ArchiveOrgProvider(item_ids=archive_items))
     return out

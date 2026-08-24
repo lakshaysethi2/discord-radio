@@ -208,6 +208,48 @@ def sync_radio_state(
     return should_play
 
 
+async def recover_silent_playback(
+    stations: dict[str, Station],
+    provider,
+    radio: RadioClock,
+    state: BotState,
+    *,
+    admin_paused: bool,
+) -> bool:
+    """Restart audio when listeners are present but nothing is playing.
+
+    ``_advance_and_announce`` used to give up after 10 failed ``/next`` calls
+    and stay silent until a join/leave. Occupied-channel silence is an SLA
+    failure, so this retries ``provider.current()`` and starts every occupied
+    station. Returns True if playback was restarted.
+    """
+    if admin_paused:
+        return False
+    occupied = [s for s in stations.values() if s.listener_count > 0]
+    if not occupied:
+        return False
+    if any(s.player.is_playing() for s in occupied):
+        return False
+    try:
+        nxt = await provider.current()
+    except Exception as exc:
+        log.warning("silence recovery: provider.current failed: %s", exc)
+        return False
+    if not nxt.ready or not nxt.local_path:
+        log.warning("silence recovery: track %s not ready", nxt.track_id)
+        return False
+    radio.reset(0)
+    state.playback_position_seconds = 0
+    sync_radio_state(stations, radio, state, admin_paused=admin_paused)
+    for st in occupied:
+        try:
+            await st.player.start(nxt)
+        except Exception as exc:
+            log.warning("silence recovery: station %s start failed: %s", st.guild_id, exc)
+    log.warning("silence recovery: restarted %s", nxt.track_id)
+    return True
+
+
 @dataclass
 class ForwardResult:
     """Outcome of a ``/forward`` skip, ready to send as the interaction reply."""
@@ -790,6 +832,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
     admin_paused = False  # manual dashboard pause; independent of listeners
     slash_commands_registered = False  # guard against double-registration on reconnect
     gatus_task: asyncio.Task | None = None  # voice heartbeat; started in on_ready
+    recover_task: asyncio.Task | None = None  # occupied-channel silence retry
 
     async def _handle_command(command: str, payload: dict | None) -> str:
         """Called by the scheduler's command loop for each pending row.
@@ -1113,7 +1156,9 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, 60.0)
             if nxt is None:
-                log.error("giving up on advancing after 10 attempts — bot will be silent")
+                log.error(
+                    "advance failed after 10 attempts — silence-recovery loop will retry"
+                )
                 return
 
             # The cursor moved to a new track starting at offset 0. Don't
@@ -1233,6 +1278,22 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 name="gatus-heartbeat",
             )
 
+        async def _silence_recovery_loop() -> None:
+            while True:
+                await asyncio.sleep(5.0)
+                async with _advance_lock:
+                    with contextlib.suppress(Exception):
+                        await recover_silent_playback(
+                            stations,
+                            provider,
+                            radio,
+                            state,
+                            admin_paused=admin_paused,
+                        )
+
+        nonlocal recover_task
+        recover_task = loop.create_task(_silence_recovery_loop(), name="silence-recovery")
+
         # Register slash commands once, then sync globally.
         nonlocal slash_commands_registered
         if not slash_commands_registered:
@@ -1326,6 +1387,10 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             gatus_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await gatus_task
+        if recover_task is not None:
+            recover_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await recover_task
         for st in stations.values():
             with contextlib.suppress(Exception):
                 await st.player.stop_hard()

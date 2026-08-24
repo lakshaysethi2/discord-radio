@@ -29,7 +29,7 @@ class TestRefresh:
         assert stats["added"] == 0
         assert stats["updated"] == 3
 
-    def test_providers_from_config_does_not_auto_append_archive(
+    def test_providers_from_config_auto_appends_archive_when_items_set(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
         from file_provider.config import Config
@@ -44,8 +44,23 @@ class TestRefresh:
             gdrive_webdav_url="http://dav:8081",
         )
         names = [p.name for p in _providers_from_config(cfg)]
+        assert names == ["webdav", "archive"]
+
+    def test_providers_from_config_skips_archive_without_items(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from file_provider.config import Config
+        from file_provider.service import _providers_from_config
+
+        cfg = Config(
+            db_path=str(tmp_path / "p.db"),
+            cache_path=str(tmp_path / "c"),
+            provider_order=["webdav"],
+            archive_org_items=[],
+            gdrive_webdav_url="http://dav:8081",
+        )
+        names = [p.name for p in _providers_from_config(cfg)]
         assert names == ["webdav"]
-        assert "archive" not in names
 
     def test_refresh_dynamic_archive_org_items(self, db, cache, fake_provider) -> None:
         s = Service(db, cache, [fake_provider])
@@ -162,6 +177,24 @@ class TestSkipUnhealthyProviders:
         s.refresh_playlist()
         t = s.current()
         assert t.title == "Track s2"
+
+    def test_current_skips_unknown_provider_without_walking_all_rows(self, db, cache) -> None:
+        from tests.file_provider.conftest import FakeProvider
+
+        class WebdavLike(FakeProvider):
+            name = "webdav"
+
+        s = Service(db, cache, [WebdavLike({"w1": b"b" * 4})])
+        s.refresh_playlist()
+        db.execute(
+            "INSERT INTO tracks(track_id,title,duration_seconds,size_bytes,provider,"
+            "source_ref,sort_order,has_video) VALUES(?,?,?,?,?,?,?,?)",
+            ("archive_dead", "orphan", 0, 1, "archive", "x", -1.0, 0),
+        )
+        db.set_cursor(0)
+        t = s.current()
+        assert t.provider_used == "webdav"
+        assert db.provider_healthy("archive") is False
 
     def test_failed_fetch_marks_unhealthy(self, db, cache) -> None:
         from tests.file_provider.conftest import FakeProvider

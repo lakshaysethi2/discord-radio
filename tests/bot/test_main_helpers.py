@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from bot.main import _resume_or_start
+from bot.main import RadioClock, _resume_or_start, recover_silent_playback
 from bot.state import BotState
 from provider.client import ProviderError, TrackResponse
 
@@ -24,11 +24,16 @@ def make_track(**kw) -> TrackResponse:
 
 
 class FakePlayer:
-    def __init__(self) -> None:
+    def __init__(self, playing: bool = False) -> None:
         self.started: list[tuple[TrackResponse, float]] = []
+        self._playing = playing
+
+    def is_playing(self) -> bool:
+        return self._playing
 
     async def start(self, track: TrackResponse, *, seek_seconds: float = 0.0) -> None:
         self.started.append((track, seek_seconds))
+        self._playing = True
 
 
 class ScriptedProvider:
@@ -123,6 +128,52 @@ class TestResumeOrStart:
             max_backoff=0.001,
         )
         assert player.started == []
+
+
+class TestRecoverSilentPlayback:
+    async def test_restarts_when_occupied_and_silent(self, state: BotState) -> None:
+        player = FakePlayer(playing=False)
+        station = type("S", (), {"listener_count": 1, "player": player, "guild_id": "g"})()
+        radio = RadioClock()
+        prov = ScriptedProvider([make_track(title="Recovered")])
+        ok = await recover_silent_playback(
+            {"g": station},  # type: ignore[arg-type]
+            prov,
+            radio,
+            state,
+            admin_paused=False,
+        )
+        assert ok is True
+        assert player.started[0][0].title == "Recovered"
+
+    async def test_noop_when_already_playing(self, state: BotState) -> None:
+        player = FakePlayer(playing=True)
+        station = type("S", (), {"listener_count": 1, "player": player, "guild_id": "g"})()
+        radio = RadioClock()
+        prov = ScriptedProvider([make_track()])
+        ok = await recover_silent_playback(
+            {"g": station},  # type: ignore[arg-type]
+            prov,
+            radio,
+            state,
+            admin_paused=False,
+        )
+        assert ok is False
+        assert player.started == []
+
+    async def test_noop_when_empty(self, state: BotState) -> None:
+        player = FakePlayer(playing=False)
+        station = type("S", (), {"listener_count": 0, "player": player, "guild_id": "g"})()
+        radio = RadioClock()
+        prov = ScriptedProvider([make_track()])
+        ok = await recover_silent_playback(
+            {"g": station},  # type: ignore[arg-type]
+            prov,
+            radio,
+            state,
+            admin_paused=False,
+        )
+        assert ok is False
 
 
 # --------------------------------------------------------- _non_bot_members ----
