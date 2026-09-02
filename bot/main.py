@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import math
 import signal
@@ -208,6 +209,70 @@ def sync_radio_state(
     return should_play
 
 
+async def ensure_station_voice_connected(client: object, station: Station) -> bool:
+    """Ensure station.voice_client is connected to the guild's voice channel.
+
+    If disconnected, cleanly tears down any zombie voice client, reconnects to
+    the channel, and updates both station.voice_client and station.player.
+    """
+    vc = station.voice_client
+    if vc is not None and getattr(vc, "is_connected", lambda: False)():
+        return True
+
+    log.warning(
+        "guild %s: voice disconnected or uninitialized — reconnecting to channel %s",
+        station.guild_id,
+        station.voice_channel_id,
+    )
+
+    guild = None
+    with contextlib.suppress(Exception):
+        guild = client.get_guild(int(station.guild_id))  # type: ignore[attr-defined]
+    if guild is None:
+        log.warning("guild %s not found for voice reconnect", station.guild_id)
+        return False
+
+    # Clean up stale connection
+    if station.voice_client is not None:
+        with contextlib.suppress(Exception):
+            res = station.voice_client.disconnect(force=True)  # type: ignore[union-attr]
+            if inspect.isawaitable(res):
+                await res
+        station.voice_client = None
+
+    guild_vc = getattr(guild, "voice_client", None)
+    if guild_vc is not None:
+        with contextlib.suppress(Exception):
+            res = guild_vc.disconnect(force=True)
+            if inspect.isawaitable(res):
+                await res
+
+    channel = guild.get_channel(int(station.voice_channel_id))
+    if channel is None:
+        log.warning(
+            "guild %s: voice channel %s not found",
+            station.guild_id,
+            station.voice_channel_id,
+        )
+        return False
+
+    try:
+        new_vc = await channel.connect(reconnect=True, timeout=30.0)
+    except Exception as exc:
+        log.warning("guild %s: voice reconnect failed: %s", station.guild_id, exc)
+        return False
+
+    station.voice_client = new_vc
+    station.voice_channel = channel
+    station.player.voice_client = new_vc
+    log.info(
+        "guild %s: successfully reconnected to voice channel %s",
+        station.guild_id,
+        station.voice_channel_id,
+    )
+    return True
+
+
 async def recover_silent_playback(
     stations: dict[str, Station],
     provider,
@@ -225,7 +290,13 @@ async def recover_silent_playback(
     """
     if admin_paused:
         return False
-    occupied = [s for s in stations.values() if s.listener_count > 0]
+    occupied = [
+        s
+        for s in stations.values()
+        if s.listener_count > 0
+        and s.voice_client is not None
+        and getattr(s.voice_client, "is_connected", lambda: False)()
+    ]
     if not occupied:
         return False
     if any(s.player.is_playing() for s in occupied):
@@ -1281,6 +1352,14 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
         async def _silence_recovery_loop() -> None:
             while True:
                 await asyncio.sleep(5.0)
+                # Auto-heal any dropped station voice clients
+                for st in list(stations.values()):
+                    if st.voice_client is None or not getattr(
+                        st.voice_client, "is_connected", lambda: False
+                    )():
+                        with contextlib.suppress(Exception):
+                            await ensure_station_voice_connected(client, st)
+
                 async with _advance_lock:
                     with contextlib.suppress(Exception):
                         await recover_silent_playback(
@@ -1317,6 +1396,17 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
 
     @client.event
     async def on_voice_state_update(member, before, after):
+        # 1. Handle bot's own voice disconnect
+        if client.user and member.id == client.user.id:
+            station = stations.get(str(member.guild.id))
+            if station is not None and after.channel is None:
+                log.warning(
+                    "guild %s: bot was disconnected from voice channel by Discord",
+                    station.guild_id,
+                )
+                station.voice_client = None
+            return
+
         if member.bot:
             return
         station = stations.get(str(member.guild.id))
@@ -1343,13 +1433,18 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             listeners = _non_bot_members(after.channel) if after.channel else []
             station.listener_count = len(listeners)
             if not admin_paused and should_resume(len(listeners), station.is_paused):
+                # Ensure connection is alive before resuming
+                await ensure_station_voice_connected(client, station)
                 # Join the shared radio *at its current position*, not at a
                 # stale per-player clock — every server hears the same offset.
-                await resume_station_at_radio_position(station.player, provider, state, radio)
-                station.is_paused = False
-                cur = station.player.current_track
-                if cur is not None:
-                    await station.now_playing.post_or_replace(cur)
+                try:
+                    await resume_station_at_radio_position(station.player, provider, state, radio)
+                    station.is_paused = False
+                    cur = station.player.current_track
+                    if cur is not None:
+                        await station.now_playing.post_or_replace(cur)
+                except Exception as exc:
+                    log.warning("guild %s resume on join failed: %s", station.guild_id, exc)
             else:
                 station.now_playing.trigger_watcher_count_update()
         elif transition is Transition.LEFT:

@@ -17,6 +17,7 @@ from provider.client import TrackResponse
 @dataclass
 class FakeVoiceClient:
     playing: bool = False
+    connected: bool = True
     last_source: object | None = None
     after_cb: object | None = None
     stop_calls: int = 0
@@ -34,6 +35,9 @@ class FakeVoiceClient:
 
     def is_playing(self):
         return self.playing
+
+    def is_connected(self):
+        return self.connected
 
 
 class FakeProvider:
@@ -307,3 +311,33 @@ class TestPlayerVolume:
     async def test_volume_is_clamped(self, ctx: Ctx) -> None:
         await ctx.player.set_volume(999)
         assert ctx.state.stream_volume_percent == 250
+
+
+class TestPlayerVoiceClientSafety:
+    async def test_start_fails_when_voice_client_disconnected(self, ctx: Ctx) -> None:
+        ctx.voice.connected = False
+        with pytest.raises(RuntimeError, match="voice client is not connected"):
+            await ctx.player.start(make_track())
+        assert len(ctx.sources) == 0  # source_factory not called
+        assert ctx.voice.play_calls == 0
+
+    async def test_start_cleans_up_source_on_play_exception(self, ctx: Ctx) -> None:
+        cleaned_up = False
+
+        class FailingSource:
+            def cleanup(self):
+                nonlocal cleaned_up
+                cleaned_up = True
+
+        ctx.player.source_factory = lambda *a, **kw: FailingSource()
+
+        def failing_play(_src, after=None):
+            raise RuntimeError("discord boom")
+
+        ctx.voice.play = failing_play
+
+        with pytest.raises(RuntimeError, match="discord boom"):
+            await ctx.player.start(make_track())
+
+        assert cleaned_up is True
+

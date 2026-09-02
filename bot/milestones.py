@@ -107,6 +107,8 @@ class MilestoneAnnouncer:
         milestones = self.checker.check_user(user_id)
         if not milestones:
             return []
+        if not self.text_channel_id:
+            return milestones
         channel = await find_channel(self.client, self.text_channel_id)
         if channel is None:
             log.warning(
@@ -177,6 +179,9 @@ class NowPlaying:
 
     async def post_or_replace(self, track) -> None:  # pragma: no cover — discord I/O
         """Delete previous embed (if any), post a fresh one, remember its id."""
+        if not self.text_channel_id:
+            return
+
         import discord
 
         if self._update_task and not self._update_task.done():
@@ -230,6 +235,9 @@ class NowPlaying:
 
     async def update_watcher_count(self) -> None:
         """Edit the current Now Playing message to update the currently watching count."""
+        if not self.text_channel_id:
+            return
+
         import discord
 
         prev_id = self.state.now_playing_message_id

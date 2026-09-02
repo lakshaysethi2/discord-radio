@@ -153,6 +153,12 @@ class Player:
             await self._start_locked(track, seek_seconds=seek_seconds)
 
     async def _start_locked(self, track: TrackResponse, *, seek_seconds: float) -> None:
+        vc_connected = self.voice_client is not None and getattr(
+            self.voice_client, "is_connected", lambda: False
+        )()
+        if not vc_connected:
+            raise RuntimeError("Cannot start playback: voice client is not connected.")
+
         # Stop any previous playback. We DON'T need to set _suppress_finish
         # here — the seq check below discards the old callback safely.
         if self.voice_client.is_playing():
@@ -180,7 +186,12 @@ class Player:
         def _after_bound(exc: BaseException | None, _seq: int = my_seq) -> None:
             self._after(exc, expected_seq=_seq)
 
-        self.voice_client.play(source, after=_after_bound)
+        try:
+            self.voice_client.play(source, after=_after_bound)
+        except Exception:
+            if hasattr(source, "cleanup"):
+                source.cleanup()
+            raise
 
     def _after(self, exc: BaseException | None, *, expected_seq: int | None = None) -> None:
         if exc is not None:
@@ -219,7 +230,7 @@ class Player:
             # discarded — belt-and-braces on top of _suppress_finish.
             self._play_seq += 1
             self._suppress_finish = True
-            if self.voice_client.is_playing():
+            if self.voice_client is not None and self.voice_client.is_playing():
                 self.voice_client.stop()
             elapsed = self.clock.stop()
             if self.persist_pause_state:
@@ -262,7 +273,7 @@ class Player:
     async def skip(self) -> None:
         """Force-finish the current track and advance."""
         async with self._lock:
-            if self.voice_client.is_playing():
+            if self.voice_client is not None and self.voice_client.is_playing():
                 # Do NOT suppress finish: we want the on_finish callback to
                 # fire so the playlist advances naturally.
                 self.voice_client.stop()
@@ -272,5 +283,5 @@ class Player:
         async with self._lock:
             self._play_seq += 1
             self._suppress_finish = True
-            if self.voice_client.is_playing():
+            if self.voice_client is not None and self.voice_client.is_playing():
                 self.voice_client.stop()
