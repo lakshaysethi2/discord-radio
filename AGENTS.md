@@ -26,6 +26,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - **Do not regress:** never raise threshold above 10s, never slow tick above 5s, never return healthy when `listener_count>0` and silent — that is the false-positive that hid outages. Commit `9e3ecdb` on `prod`.
 - **Playback sources:** live `.env` must keep `FILE_PROVIDER_ORDER=webdav,archive` (Drive primary, archive.org leftover rows). Unknown/unloaded providers are skipped and marked unhealthy so the cursor cannot 502-loop 500 archive rows. Occupied-channel silence recovery in `bot/main.py` (`recover_silent_playback`, 5s loop) retries `provider.current()` after `/next` exhausts. rclone sidecar (`rclone-serve` / alias `rclone-webdav`) is watched by compose `rclone-guard` + `scripts/rclone-webdav-watchdog.sh`.
 
+## Git
+
+Only `main` and `prod` exist. Branch cleanup / do-not-merge tags: `docs/git-branches.md` (read when pushing remotes or resurrecting old work).
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
