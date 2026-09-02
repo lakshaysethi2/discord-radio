@@ -405,6 +405,27 @@ class TestArchiveItemsControls:
         assert row["command"] == "refresh_playlist"
         assert "Hawkins_Lectures_transcoded_actual_files" in row["payload"]
 
+    def test_archive_gui_disabled_hides_form_and_rejects_post(
+        self, config, db, http_client, admin_cookie: dict
+    ) -> None:
+        from dataclasses import replace
+
+        from dashboard.main import create_app
+
+        cfg = replace(config, archive_gui_enabled=False)
+        app = create_app(cfg, db=db, http_client=http_client)
+        client = TestClient(app, follow_redirects=False)
+        page = client.get("/queue", cookies=admin_cookie)
+        assert page.status_code == 200
+        assert "Archive.org Sources" not in page.text
+        assert "/controls/archive_items" not in page.text
+        response = client.post(
+            "/controls/archive_items",
+            data={"archive_org_items": "item1", "csrf": "csrf-test"},
+            cookies=admin_cookie,
+        )
+        assert response.status_code == 404
+
     def test_archive_items_requires_csrf(self, client: TestClient, admin_cookie: dict) -> None:
         response = client.post(
             "/controls/archive_items",

@@ -34,6 +34,7 @@ def config() -> DashboardConfig:
         discord_client_secret="test-client-secret",
         discord_redirect_uri="http://localhost:8000/callback",
         admin_user_ids=ADMIN_IDS,
+        archive_gui_enabled=True,
     )
 
 

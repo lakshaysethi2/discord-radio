@@ -62,7 +62,7 @@ class BotConfig:
     # Gatus voice heartbeat — disabled entirely unless both push vars are set.
     gatus_push_url: str = ""
     gatus_push_token: str = ""
-    gatus_push_interval_seconds: int = 30
+    gatus_push_interval_seconds: int = 5
 
 
 def load() -> BotConfig:
@@ -78,5 +78,5 @@ def load() -> BotConfig:
         admin_user_ids=_env_id_list("ADMIN_USER_IDS"),
         gatus_push_url=_env("GATUS_PUSH_URL"),
         gatus_push_token=_env("GATUS_PUSH_TOKEN"),
-        gatus_push_interval_seconds=_env_int("GATUS_PUSH_INTERVAL_SECONDS", 30),
+        gatus_push_interval_seconds=_env_int("GATUS_PUSH_INTERVAL_SECONDS", 5),
     )

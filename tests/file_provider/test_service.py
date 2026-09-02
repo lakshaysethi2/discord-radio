@@ -29,6 +29,39 @@ class TestRefresh:
         assert stats["added"] == 0
         assert stats["updated"] == 3
 
+    def test_providers_from_config_auto_appends_archive_when_items_set(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from file_provider.config import Config
+        from file_provider.service import _providers_from_config
+
+        monkeypatch.setenv("ARCHIVE_ORG_ITEMS", "Hawkins_Lectures_transcoded_actual_files")
+        cfg = Config(
+            db_path=str(tmp_path / "p.db"),
+            cache_path=str(tmp_path / "c"),
+            provider_order=["webdav"],
+            archive_org_items=["Hawkins_Lectures_transcoded_actual_files"],
+            gdrive_webdav_url="http://dav:8081",
+        )
+        names = [p.name for p in _providers_from_config(cfg)]
+        assert names == ["webdav", "archive"]
+
+    def test_providers_from_config_skips_archive_without_items(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from file_provider.config import Config
+        from file_provider.service import _providers_from_config
+
+        cfg = Config(
+            db_path=str(tmp_path / "p.db"),
+            cache_path=str(tmp_path / "c"),
+            provider_order=["webdav"],
+            archive_org_items=[],
+            gdrive_webdav_url="http://dav:8081",
+        )
+        names = [p.name for p in _providers_from_config(cfg)]
+        assert names == ["webdav"]
+
     def test_refresh_dynamic_archive_org_items(self, db, cache, fake_provider) -> None:
         s = Service(db, cache, [fake_provider])
         s.refresh_playlist(archive_org_items="item1,item2")
@@ -36,6 +69,143 @@ class TestRefresh:
 
         archive_p = next(p for p in s.providers if isinstance(p, ArchiveOrgProvider))
         assert archive_p.item_ids == ["item1", "item2"]
+
+    def test_refresh_dynamic_gdrive_source(self, db, cache, fake_provider) -> None:
+        s = Service(db, cache, [fake_provider])
+        s.refresh_playlist(
+            gdrive_webdav_url="http://dav:8081",
+            gdrive_webdav_path="mother-of-all-torrents",
+        )
+        from file_provider.providers.webdav import WebDavProvider
+
+        dav = next(p for p in s.providers if isinstance(p, WebDavProvider))
+        assert dav.url == "http://dav:8081"
+        assert dav.path == "/mother-of-all-torrents"
+        # Re-call with a new path updates the same instance.
+        s.refresh_playlist(gdrive_webdav_path="/other")
+        assert dav.path == "/other"
+        assert dav.url == "http://dav:8081"
+
+
+class TestSkipUnhealthyProviders:
+    def test_current_skips_unhealthy_provider(self, db, cache) -> None:
+        from tests.file_provider.conftest import FakeProvider
+
+        class OtherProvider(FakeProvider):
+            name = "other"
+
+        s = Service(db, cache, [FakeProvider({"s1": b"a" * 4}), OtherProvider({"o1": b"b" * 4})])
+        s.refresh_playlist()
+        db.mark_provider("fake", healthy=False)
+        # 'fake' rows get skipped; the first 'other' row plays instead.
+        t = s.current()
+        assert t.provider_used == "other"
+
+    def test_skip_wraps_around(self, db, cache) -> None:
+        from tests.file_provider.conftest import FakeProvider
+
+        class OtherProvider(FakeProvider):
+            name = "other"
+
+        s = Service(db, cache, [FakeProvider({"s1": b"a" * 4, "s2": b"b" * 4}), OtherProvider({"o1": b"c" * 4})])
+        s.refresh_playlist()
+        db.mark_provider("fake", healthy=False)
+        db.set_cursor(1)  # cursor on a 'fake' row; next playable is ahead
+        t = s.current()
+        assert t.provider_used == "other"
+
+    def test_all_unhealthy_degrades_to_fetch_attempt(self, db, cache) -> None:
+
+        from tests.file_provider.conftest import FakeProvider
+
+        s = Service(db, cache, [FakeProvider({"s1": b"a" * 4})])
+        s.refresh_playlist()
+        db.mark_provider("fake", healthy=False)
+        # Cursor row is returned anyway; the fetch itself succeeds here since
+        # FakeProvider has no network — the attempt is what matters.
+        t = s.current()
+        assert t.provider_used == "fake"
+
+    def test_empty_scan_keeps_existing_rows(self, db, cache, fake_provider) -> None:
+        s = Service(db, cache, [fake_provider])
+        s.refresh_playlist()
+        assert db.playlist_length() == 3
+        fake_provider.files.clear()
+        stats = s.refresh_playlist()
+        assert stats["added"] == 0
+        assert db.playlist_length() == 3
+
+    def test_unconfigured_provider_does_not_wipe_rows(self, db, cache, fake_provider) -> None:
+        s = Service(db, cache, [fake_provider])
+        s.refresh_playlist()
+        fake_provider.is_configured = lambda: False  # type: ignore[method-assign]
+        s.refresh_playlist()
+        assert db.playlist_length() == 3
+
+    def test_previous_all_unhealthy_still_uses_cached_row(self, db, cache, fake_provider) -> None:
+        s = Service(db, cache, [fake_provider])
+        s.refresh_playlist()
+        first = s.current()
+        # Join prefetch so its mark_provider(healthy=True) doesn't race
+        # with the explicit unhealthy mark below (flakes when run after
+        # other tests that prime timing).
+        if s._prefetch_thread is not None:
+            s._prefetch_thread.join(timeout=2)
+        db.mark_provider("fake", healthy=False)
+        t = s.previous()
+        assert t.track_id != first.track_id
+        assert t.ready is True
+
+    def test_previous_skips_unhealthy_provider(self, db, cache) -> None:
+        from tests.file_provider.conftest import FakeProvider
+
+        class OtherProvider(FakeProvider):
+            name = "other"
+
+        s = Service(db, cache, [FakeProvider({"s1": b"a" * 4}), OtherProvider({"o1": b"b" * 4})])
+        s.refresh_playlist()
+        db.mark_provider("fake", healthy=False)
+        t = s.previous()
+        assert t.provider_used == "other"
+
+    def test_current_skips_failed_fetch_and_plays_next(self, db, cache) -> None:
+        from tests.file_provider.conftest import FakeProvider
+
+        fp = FakeProvider({"s1": b"a" * 4, "s2": b"b" * 4})
+        fp.fail.add("s1")
+        s = Service(db, cache, [fp])
+        s.refresh_playlist()
+        t = s.current()
+        assert t.title == "Track s2"
+
+    def test_current_skips_unknown_provider_without_walking_all_rows(self, db, cache) -> None:
+        from tests.file_provider.conftest import FakeProvider
+
+        class WebdavLike(FakeProvider):
+            name = "webdav"
+
+        s = Service(db, cache, [WebdavLike({"w1": b"b" * 4})])
+        s.refresh_playlist()
+        db.execute(
+            "INSERT INTO tracks(track_id,title,duration_seconds,size_bytes,provider,"
+            "source_ref,sort_order,has_video) VALUES(?,?,?,?,?,?,?,?)",
+            ("archive_dead", "orphan", 0, 1, "archive", "x", -1.0, 0),
+        )
+        db.set_cursor(0)
+        t = s.current()
+        assert t.provider_used == "webdav"
+        assert db.provider_healthy("archive") is False
+
+    def test_failed_fetch_marks_unhealthy(self, db, cache) -> None:
+        from tests.file_provider.conftest import FakeProvider
+
+        fp = FakeProvider({"s1": b"a" * 4})
+        fp.fail.add("s1")
+        s = Service(db, cache, [fp])
+        s.refresh_playlist()
+        with pytest.raises(ProviderFetchError):
+            s.current()
+        assert db.provider_healthy("fake") is False
 
 
 class TestCurrentAndNext:
@@ -60,6 +230,19 @@ class TestCurrentAndNext:
         assert t.playlist_position == 0
         _wait_prefetch(service)
 
+    def test_previous_steps_back(self, service: Service) -> None:
+        service.next()
+        t = service.previous()
+        assert t.playlist_position == 0
+        assert t.title == "Track s1"
+        _wait_prefetch(service)
+
+    def test_previous_wraps(self, service: Service) -> None:
+        t = service.previous()
+        assert t.playlist_position == 2
+        assert t.title == "Track s3"
+        _wait_prefetch(service)
+
     def test_current_fetches_file(self, service: Service, fake_provider) -> None:
         t = service.current()
         from pathlib import Path
@@ -77,7 +260,7 @@ class TestCurrentAndNext:
         assert before.count("s1") == fake_provider.fetches.count("s1")
 
     def test_provider_failure_raises(self, db, cache, fake_provider) -> None:
-        fake_provider.fail.add("s1")
+        fake_provider.fail.update(fake_provider.files)
         s = Service(db, cache, [fake_provider])
         s.refresh_playlist()
         with pytest.raises(ProviderFetchError):

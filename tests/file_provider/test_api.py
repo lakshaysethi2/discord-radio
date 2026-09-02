@@ -35,6 +35,12 @@ def test_next(client) -> None:
     assert r.json()["title"] == "Track s2"
 
 
+def test_previous(client) -> None:
+    r = client.post("/previous")
+    assert r.status_code == 200
+    assert r.json()["title"] == "Track s3"
+
+
 def test_peek(client) -> None:
     r = client.get("/peek?count=2")
     assert r.status_code == 200
@@ -72,6 +78,19 @@ def test_refresh(client) -> None:
     r = client.post("/refresh")
     assert r.status_code == 200
     assert "total" in r.json()
+
+
+def test_refresh_passes_gdrive_payload(client, service) -> None:
+    from file_provider.providers.webdav import WebDavProvider
+
+    r = client.post(
+        "/refresh",
+        json={"gdrive_webdav_url": "http://dav:8081", "gdrive_webdav_path": "/lib"},
+    )
+    assert r.status_code == 200
+    dav = next(p for p in service.providers if isinstance(p, WebDavProvider))
+    assert dav.url == "http://dav:8081"
+    assert dav.path == "/lib"
 
 
 def test_empty_playlist_returns_404(tmp_path):

@@ -171,6 +171,17 @@ class FileProviderClient:
             raise ProviderError(f"non-JSON response from /next: {resp.text[:200]}") from exc
         return TrackResponse.from_json(data)
 
+    async def previous(self) -> TrackResponse:
+        """Step the playlist back one track and return it."""
+        resp = await self._request("POST", "/previous")
+        if resp.status_code != 200:
+            raise ProviderError(f"POST /previous -> HTTP {resp.status_code}: {resp.text[:200]}")
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise ProviderError(f"non-JSON response from /previous: {resp.text[:200]}") from exc
+        return TrackResponse.from_json(data)
+
     async def peek(self, count: int = 5) -> list[TrackResponse]:
         """Peek `count` upcoming tracks without advancing (for /queue view)."""
         if count <= 0:
@@ -240,12 +251,24 @@ class FileProviderClient:
             raise ProviderError(f"POST /tracks/{track_id}/played -> HTTP {resp.status_code}")
 
     async def refresh(
-        self, archive_org_items: str | None = None, *, timeout: float = 60.0
+        self,
+        archive_org_items: str | None = None,
+        *,
+        gdrive_webdav_url: str | None = None,
+        gdrive_webdav_path: str | None = None,
+        timeout: float = 60.0,
     ) -> dict[str, Any]:
         """POST /refresh — trigger file-provider rescan."""
         kwargs: dict[str, Any] = {"timeout": timeout}
+        payload: dict[str, Any] = {}
         if archive_org_items:
-            kwargs["json"] = {"archive_org_items": archive_org_items}
+            payload["archive_org_items"] = archive_org_items
+        if gdrive_webdav_url:
+            payload["gdrive_webdav_url"] = gdrive_webdav_url
+        if gdrive_webdav_path:
+            payload["gdrive_webdav_path"] = gdrive_webdav_path
+        if payload:
+            kwargs["json"] = payload
         resp = await self._request("POST", "/refresh", **kwargs)
         if resp.status_code != 200:
             raise ProviderError(f"POST /refresh -> HTTP {resp.status_code}: {resp.text[:200]}")

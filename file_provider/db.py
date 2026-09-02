@@ -361,6 +361,22 @@ class ProviderDB:
                 )
             return cur.rowcount
 
+    def repoint_tracks(self, *, drop_ids: set[str], final_order: list[str]) -> int:
+        """Apply a provider migration atomically.
+
+        Deletes the dropped rows and renumbers `final_order` sequentially
+        (sort_order 0..n-1), so the playlist cursor keeps pointing at the same
+        content. Returns the number of rows dropped.
+        """
+        with self.transaction() as cur:
+            for drop_id in drop_ids:
+                cur.execute("DELETE FROM tracks WHERE track_id=?", (drop_id,))
+            for i, track_id in enumerate(final_order):
+                cur.execute(
+                    "UPDATE tracks SET sort_order=? WHERE track_id=?", (float(i), track_id)
+                )
+        return len(drop_ids)
+
     # -------------------------------------------------------------- cache
     def record_cache(self, track_id: str, path: str, size_bytes: int) -> None:
         self.execute(
@@ -399,6 +415,11 @@ class ProviderDB:
             f"{col}=CURRENT_TIMESTAMP, last_error=excluded.last_error",
             (provider, 1 if healthy else 0, error),
         )
+
+    def provider_healthy(self, provider: str) -> bool:
+        """True unless the provider was explicitly marked unhealthy."""
+        row = self.fetchone("SELECT healthy FROM provider_health WHERE provider=?", (provider,))
+        return bool(row["healthy"]) if row else True
 
     def health_snapshot(self) -> dict[str, dict]:
         rows = self.fetchall("SELECT * FROM provider_health")

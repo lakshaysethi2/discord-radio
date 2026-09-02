@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import math
 import signal
@@ -38,12 +39,19 @@ from bot.player import Player
 from bot.presence import Transition, VoiceEvent, should_pause, should_resume
 from bot.scheduler import Scheduler
 from bot.state import BotState, GuildScopedState
+from bot.titles import display_title
 from bot.tracker import SessionTracker
 from db import guilds as guilds_db
 from db.database import Database
 from provider.client import FileProviderClient, ProviderError, TrackResponse
 
 log = logging.getLogger(__name__)
+
+
+def _is_missing_track(exc: BaseException) -> bool:
+    """True when the provider 404'd a specific track id (gone from playlist)."""
+    msg = str(exc).lower()
+    return "http 404" in msg or "unknown track" in msg
 
 
 @dataclass
@@ -201,6 +209,118 @@ def sync_radio_state(
     return should_play
 
 
+async def ensure_station_voice_connected(client: object, station: Station) -> bool:
+    """Ensure station.voice_client is connected to the guild's voice channel.
+
+    If disconnected, cleanly tears down any zombie voice client, reconnects to
+    the channel, and updates both station.voice_client and station.player.
+    """
+    vc = station.voice_client
+    if vc is not None and getattr(vc, "is_connected", lambda: False)():
+        return True
+
+    log.warning(
+        "guild %s: voice disconnected or uninitialized — reconnecting to channel %s",
+        station.guild_id,
+        station.voice_channel_id,
+    )
+
+    guild = None
+    with contextlib.suppress(Exception):
+        guild = client.get_guild(int(station.guild_id))  # type: ignore[attr-defined]
+    if guild is None:
+        log.warning("guild %s not found for voice reconnect", station.guild_id)
+        return False
+
+    # Clean up stale connection
+    if station.voice_client is not None:
+        with contextlib.suppress(Exception):
+            res = station.voice_client.disconnect(force=True)  # type: ignore[union-attr]
+            if inspect.isawaitable(res):
+                await res
+        station.voice_client = None
+
+    guild_vc = getattr(guild, "voice_client", None)
+    if guild_vc is not None:
+        with contextlib.suppress(Exception):
+            res = guild_vc.disconnect(force=True)
+            if inspect.isawaitable(res):
+                await res
+
+    channel = guild.get_channel(int(station.voice_channel_id))
+    if channel is None:
+        log.warning(
+            "guild %s: voice channel %s not found",
+            station.guild_id,
+            station.voice_channel_id,
+        )
+        return False
+
+    try:
+        new_vc = await channel.connect(reconnect=True, timeout=30.0)
+    except Exception as exc:
+        log.warning("guild %s: voice reconnect failed: %s", station.guild_id, exc)
+        return False
+
+    station.voice_client = new_vc
+    station.voice_channel = channel
+    station.player.voice_client = new_vc
+    log.info(
+        "guild %s: successfully reconnected to voice channel %s",
+        station.guild_id,
+        station.voice_channel_id,
+    )
+    return True
+
+
+async def recover_silent_playback(
+    stations: dict[str, Station],
+    provider,
+    radio: RadioClock,
+    state: BotState,
+    *,
+    admin_paused: bool,
+) -> bool:
+    """Restart audio when listeners are present but nothing is playing.
+
+    ``_advance_and_announce`` used to give up after 10 failed ``/next`` calls
+    and stay silent until a join/leave. Occupied-channel silence is an SLA
+    failure, so this retries ``provider.current()`` and starts every occupied
+    station. Returns True if playback was restarted.
+    """
+    if admin_paused:
+        return False
+    occupied = [
+        s
+        for s in stations.values()
+        if s.listener_count > 0
+        and s.voice_client is not None
+        and getattr(s.voice_client, "is_connected", lambda: False)()
+    ]
+    if not occupied:
+        return False
+    if any(s.player.is_playing() for s in occupied):
+        return False
+    try:
+        nxt = await provider.current()
+    except Exception as exc:
+        log.warning("silence recovery: provider.current failed: %s", exc)
+        return False
+    if not nxt.ready or not nxt.local_path:
+        log.warning("silence recovery: track %s not ready", nxt.track_id)
+        return False
+    radio.reset(0)
+    state.playback_position_seconds = 0
+    sync_radio_state(stations, radio, state, admin_paused=admin_paused)
+    for st in occupied:
+        try:
+            await st.player.start(nxt)
+        except Exception as exc:
+            log.warning("silence recovery: station %s start failed: %s", st.guild_id, exc)
+    log.warning("silence recovery: restarted %s", nxt.track_id)
+    return True
+
+
 @dataclass
 class ForwardResult:
     """Outcome of a ``/forward`` skip, ready to send as the interaction reply."""
@@ -219,6 +339,15 @@ class RewindResult:
     ok: bool = False
     new_position_seconds: int = 0
     track_changed: bool = False
+
+
+@dataclass
+class PreviousResult:
+    """Outcome of a ``/previous`` skip, ready to send as the interaction reply."""
+
+    message: str
+    ok: bool = False
+    track_id: str = ""
 
 
 # Upper bound on how many tracks one /forward skip may walk past. Guards
@@ -394,7 +523,7 @@ async def forward_radio(
         message = (
             f"⏩ Skipped forward {_fmt_minutes(float(minutes))} — "
             f"now at {_fmt_clock(final_offset)}"
-            + (f" on **{final_track.title}**" if track_changed else "")
+            + (f" on **{display_title(final_track.title)}**" if track_changed else "")
             + (", radio is paused." if paused else ".")
         )
         return ForwardResult(
@@ -497,6 +626,59 @@ async def rewind_radio(
         )
 
 
+async def previous_radio(
+    *,
+    provider: FileProviderClient,
+    state: BotState,
+    radio: RadioClock,
+    stations: dict[str, Station],
+    advance_lock: asyncio.Lock,
+    admin_paused: bool,
+) -> PreviousResult:
+    """Step the shared radio back one track.
+
+    Backs the ``/previous`` slash command — the track-level mirror of
+    ``/next``. Runs under ``advance_lock`` so it cannot race a natural
+    end-of-track advance. The new track starts at offset 0 on every
+    listening station.
+    """
+    if not any(s.listener_count > 0 for s in stations.values()):
+        return PreviousResult(
+            ok=False, message="⏮️ No active listeners in this radio to skip for."
+        )
+
+    async with advance_lock:
+        try:
+            track = await provider.previous()
+        except Exception as exc:
+            log.warning("previous: provider failed: %s", exc)
+            return PreviousResult(
+                ok=False, message="⚠️ Could not reach the file provider. Try again in a moment."
+            )
+        if not track.ready or not track.local_path:
+            return PreviousResult(
+                ok=False, message="⚠️ That track isn't ready yet — try again in a moment."
+            )
+
+        state.current_track_id = track.track_id
+        radio.reset(0)
+        state.playback_position_seconds = 0
+        sync_radio_state(stations, radio, state, admin_paused=admin_paused)
+        for st in stations.values():
+            try:
+                if radio.is_playing() and st.listener_count > 0:
+                    await st.player.start(track)
+                await st.now_playing.post_or_replace(track)
+            except Exception as exc:
+                log.warning("station %s previous restart failed: %s", st.guild_id, exc)
+
+        return PreviousResult(
+            ok=True,
+            message=f"⏮️ Previous track: **{display_title(track.title)}**",
+            track_id=track.track_id,
+        )
+
+
 async def apply_server_config(
     *,
     db: Database,
@@ -579,12 +761,16 @@ async def apply_server_config(
 
 
 def _init_logging() -> None:
+    # Default WARNING so third-party HTTP/health-check noise stays quiet;
+    # our own code and discord.py lifecycle keep INFO (the interesting events).
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
-    # discord.py is noisy at DEBUG; keep INFO.
+    logging.getLogger("bot").setLevel(logging.INFO)
     logging.getLogger("discord").setLevel(logging.INFO)
+    for noisy in ("httpx", "httpcore", "uvicorn.access"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 async def _resume_or_start(
@@ -608,13 +794,25 @@ async def _resume_or_start(
     for attempt in range(1, max_attempts + 1):
         try:
             if resume_id:
-                track = await provider.get_by_id(resume_id)
-                if not track.ready or not track.local_path:
-                    log.warning("track %s not ready — falling back to /current", resume_id)
-                    track = await provider.current()
+                try:
+                    track = await provider.get_by_id(resume_id)
+                except ProviderError as exc:
+                    if not _is_missing_track(exc):
+                        raise
+                    # Saved id was pruned (e.g. a Drive rescan). Retrying the
+                    # same 404 just keeps the radio silent — drop it and play
+                    # whatever is at the playlist cursor.
+                    log.warning("saved track %s is gone — falling back to /current", resume_id)
+                    resume_id = None
                     resume_at = 0
+                    track = await provider.current()
                 else:
-                    log.info("resuming %s @ %ds", track.title, resume_at)
+                    if not track.ready or not track.local_path:
+                        log.warning("track %s not ready — falling back to /current", resume_id)
+                        track = await provider.current()
+                        resume_at = 0
+                    else:
+                        log.info("resuming %s @ %ds", track.title, resume_at)
             else:
                 track = await provider.current()
                 log.info("starting playback: %s", track.title)
@@ -664,7 +862,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
 
     db = Database(config.database_path)
     state = BotState(db)
-    provider = FileProviderClient(config.file_provider_base_url)
+    provider = FileProviderClient(config.file_provider_base_url, timeout=60.0)
 
     # Optional Gatus voice heartbeat — fully disabled unless both env vars are
     # set, so other deployments run unchanged (see bot.gatus_heartbeat).
@@ -705,6 +903,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
     admin_paused = False  # manual dashboard pause; independent of listeners
     slash_commands_registered = False  # guard against double-registration on reconnect
     gatus_task: asyncio.Task | None = None  # voice heartbeat; started in on_ready
+    recover_task: asyncio.Task | None = None  # occupied-channel silence retry
 
     async def _handle_command(command: str, payload: dict | None) -> str:
         """Called by the scheduler's command loop for each pending row.
@@ -745,17 +944,49 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                     from db.models import BotStateKey
 
                     items = db.get_state(BotStateKey.ARCHIVE_ORG_ITEMS)
-                res = await provider.refresh(archive_org_items=items)
+                gdrive_url = (payload or {}).get("gdrive_webdav_url") if payload else None
+                gdrive_path = (payload or {}).get("gdrive_webdav_path") if payload else None
+                if gdrive_url is None or gdrive_path is None:
+                    from db.models import BotStateKey
+
+                    gdrive_url = gdrive_url or db.get_state(BotStateKey.GDRIVE_WEBDAV_URL)
+                    gdrive_path = gdrive_path or db.get_state(BotStateKey.GDRIVE_WEBDAV_PATH)
+                res = await provider.refresh(
+                    archive_org_items=items,
+                    gdrive_webdav_url=gdrive_url,
+                    gdrive_webdav_path=gdrive_path,
+                )
                 return f"ok:{res}"
             except Exception as exc:
                 return f"error: {exc}"
         if not stations:
             return "error: no servers configured"
-        if command == "skip":
+        if command in ("skip", "next"):
             for st in stations.values():
                 if st.listener_count > 0:
                     await st.player.skip()
             return "ok:skipped"
+        if command == "previous":
+            # Track-level Previous — mirror of /previous slash command.
+            async with _advance_lock:
+                try:
+                    track = await provider.previous()
+                except Exception as exc:
+                    return f"error: previous failed: {exc}"
+                if not track.ready or not track.local_path:
+                    return f"error: track {track.track_id} not ready"
+                state.current_track_id = track.track_id
+                radio.reset(0)
+                state.playback_position_seconds = 0
+                sync_radio_state(stations, radio, state, admin_paused=admin_paused)
+                for st in stations.values():
+                    try:
+                        if radio.is_playing() and st.listener_count > 0:
+                            await st.player.start(track)
+                        await st.now_playing.post_or_replace(track)
+                    except Exception as exc:
+                        log.warning("station %s previous failed: %s", st.guild_id, exc)
+            return f"ok:previous:{track.track_id}"
         if command == "pause":
             admin_paused = True
             for st in stations.values():
@@ -847,6 +1078,17 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             admin_paused=admin_paused,
         )
 
+    async def _previous_radio() -> PreviousResult:
+        """Slash-command hook for /previous — see previous_radio()."""
+        return await previous_radio(
+            provider=provider,
+            state=state,
+            radio=radio,
+            stations=stations,
+            advance_lock=_advance_lock,
+            admin_paused=admin_paused,
+        )
+
     async def _build_station(guild, cfg) -> Station | None:
         """Connect to a guild's configured voice channel and build a Station.
 
@@ -903,7 +1145,9 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             db=db,
             guild_id=cfg.guild_id,
         )
-        announcer = MilestoneAnnouncer(client=client, text_channel_id=tc_id, db=db)
+        announcer = MilestoneAnnouncer(
+            client=client, text_channel_id=tc_id, db=db, guild_id=cfg.guild_id
+        )
         station = Station(
             guild_id=cfg.guild_id,
             guild_name=cfg.guild_name or guild.name,
@@ -983,7 +1227,9 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, 60.0)
             if nxt is None:
-                log.error("giving up on advancing after 10 attempts — bot will be silent")
+                log.error(
+                    "advance failed after 10 attempts — silence-recovery loop will retry"
+                )
                 return
 
             # The cursor moved to a new track starting at offset 0. Don't
@@ -1103,6 +1349,30 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 name="gatus-heartbeat",
             )
 
+        async def _silence_recovery_loop() -> None:
+            while True:
+                await asyncio.sleep(5.0)
+                # Auto-heal any dropped station voice clients
+                for st in list(stations.values()):
+                    if st.voice_client is None or not getattr(
+                        st.voice_client, "is_connected", lambda: False
+                    )():
+                        with contextlib.suppress(Exception):
+                            await ensure_station_voice_connected(client, st)
+
+                async with _advance_lock:
+                    with contextlib.suppress(Exception):
+                        await recover_silent_playback(
+                            stations,
+                            provider,
+                            radio,
+                            state,
+                            admin_paused=admin_paused,
+                        )
+
+        nonlocal recover_task
+        recover_task = loop.create_task(_silence_recovery_loop(), name="silence-recovery")
+
         # Register slash commands once, then sync globally.
         nonlocal slash_commands_registered
         if not slash_commands_registered:
@@ -1115,6 +1385,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                 stations=stations,
                 forward_radio=_forward_radio,
                 rewind_radio=_rewind_radio,
+                previous_radio=_previous_radio,
             ):
                 tree.command(name=name, description=desc)(cb)
             try:
@@ -1125,6 +1396,17 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
 
     @client.event
     async def on_voice_state_update(member, before, after):
+        # 1. Handle bot's own voice disconnect
+        if client.user and member.id == client.user.id:
+            station = stations.get(str(member.guild.id))
+            if station is not None and after.channel is None:
+                log.warning(
+                    "guild %s: bot was disconnected from voice channel by Discord",
+                    station.guild_id,
+                )
+                station.voice_client = None
+            return
+
         if member.bot:
             return
         station = stations.get(str(member.guild.id))
@@ -1151,13 +1433,18 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             listeners = _non_bot_members(after.channel) if after.channel else []
             station.listener_count = len(listeners)
             if not admin_paused and should_resume(len(listeners), station.is_paused):
+                # Ensure connection is alive before resuming
+                await ensure_station_voice_connected(client, station)
                 # Join the shared radio *at its current position*, not at a
                 # stale per-player clock — every server hears the same offset.
-                await resume_station_at_radio_position(station.player, provider, state, radio)
-                station.is_paused = False
-                cur = station.player.current_track
-                if cur is not None:
-                    await station.now_playing.post_or_replace(cur)
+                try:
+                    await resume_station_at_radio_position(station.player, provider, state, radio)
+                    station.is_paused = False
+                    cur = station.player.current_track
+                    if cur is not None:
+                        await station.now_playing.post_or_replace(cur)
+                except Exception as exc:
+                    log.warning("guild %s resume on join failed: %s", station.guild_id, exc)
             else:
                 station.now_playing.trigger_watcher_count_update()
         elif transition is Transition.LEFT:
@@ -1195,6 +1482,10 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
             gatus_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await gatus_task
+        if recover_task is not None:
+            recover_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await recover_task
         for st in stations.values():
             with contextlib.suppress(Exception):
                 await st.player.stop_hard()

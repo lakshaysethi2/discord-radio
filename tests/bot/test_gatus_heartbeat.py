@@ -20,7 +20,7 @@ from bot.gatus_heartbeat import (
     is_radio_healthy,
 )
 
-BASE = "https://gatus.lak.nz"
+BASE = "https://gatus.example.com"
 PUSH_URL = f"{BASE}{ENDPOINT_PATH}"
 
 
@@ -36,10 +36,11 @@ class FakeVoiceClient:
 @dataclass
 class FakeStation:
     voice_client: FakeVoiceClient
+    listener_count: int = 0
 
 
 def make_stations(*connected: bool) -> dict[str, FakeStation]:
-    return {f"g{i}": FakeStation(FakeVoiceClient(c)) for i, c in enumerate(connected)}
+    return {f"g{i}": FakeStation(FakeVoiceClient(c), listener_count=1) for i, c in enumerate(connected)}
 
 
 class RecordingClient:
@@ -67,17 +68,26 @@ def make_heartbeat(**kw) -> GatusHeartbeat:
 
 # ------------------------------------------------------------ is_radio_healthy
 class TestIsRadioHealthy:
-    def test_empty_stations_is_unhealthy(self) -> None:
-        assert is_radio_healthy({}) is False
+    def test_empty_stations_is_healthy(self) -> None:
+        # No listeners anywhere — silence is intentional (pause when empty).
+        assert is_radio_healthy({}) is True
 
     def test_connected_station_is_healthy(self) -> None:
         assert is_radio_healthy(make_stations(True)) is True
 
     def test_disconnected_station_is_unhealthy(self) -> None:
+        # Voice dropped while someone is listening.
         assert is_radio_healthy(make_stations(False)) is False
 
-    def test_any_connected_counts_as_healthy(self) -> None:
-        assert is_radio_healthy(make_stations(False, True)) is True
+    def test_disconnected_empty_station_doesnt_fail(self) -> None:
+        # A disconnected station with no listeners must not fail health when
+        # another station is connected and has listeners.
+        stations = {
+            **make_stations(False),
+            "g1": FakeStation(FakeVoiceClient(True), listener_count=1),
+        }
+        stations["g0"].listener_count = 0
+        assert is_radio_healthy(stations) is True
 
     def test_all_disconnected_is_unhealthy(self) -> None:
         assert is_radio_healthy(make_stations(False, False)) is False

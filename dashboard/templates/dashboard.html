@@ -2,16 +2,22 @@
 {% block title %}Dashboard — TV Bot{% endblock %}
 {% block content %}
   <div class="grid gap-6 md:grid-cols-3">
-    <section class="md:col-span-2 rounded-lg bg-slate-900 p-5 border border-slate-800">
+    <section class="md:col-span-2 rounded-lg bg-slate-900 p-5 border border-slate-800" aria-live="polite" aria-label="Now Playing">
       <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-2">Now Playing</h2>
       {% if track_title %}
-        <p class="text-lg font-semibold">{{ track_title }}</p>
+        <p class="text-lg font-semibold">{{ track_title | display_title }}</p>
         <p class="text-sm text-slate-400 mt-1">
           Track #{{ now.playlist_position + 1 }}
-          · {{ elapsed_fmt }} elapsed
-          {% if track_duration %}/ {{ duration_fmt }}{% endif %}
+          · <span id="elapsed">{{ elapsed_fmt }}</span> elapsed
+          {% if track_duration %}/ {{ duration_fmt }} <span id="remaining" class="text-slate-500">· {{ (track_duration - now.playback_position_seconds) | hms }} left</span>{% endif %}
           {% if now.is_paused %} · <span class="text-amber-400">paused</span>{% endif %}
         </p>
+        {% if track_duration %}
+        <div id="progress-wrap" class="mt-3 h-1.5 w-full rounded bg-slate-800 overflow-hidden" role="progressbar" aria-valuemin="0" aria-valuemax="{{ track_duration }}" aria-valuenow="{{ now.playback_position_seconds }}" aria-valuetext="{{ (now.playback_position_seconds * 100 // track_duration) }}%" aria-label="Playback progress for {{ track_title | display_title }}" title="{{ elapsed_fmt }} / {{ duration_fmt }}">
+          <div id="progress-bar" class="h-full bg-indigo-500" style="width: {{ ([100, (now.playback_position_seconds * 100 // track_duration)] | min) }}%"></div>
+        </div>
+        {% endif %}
+        <a href="/queue?page={{ (now.playlist_position // 50) + 1 }}&page_size=50#current-track" class="mt-3 inline-block text-xs text-slate-400 hover:text-white" title="Jump to this track in the playlist">View in queue →</a>
       {% else %}
         <p class="text-slate-400">Nothing playing yet.</p>
       {% endif %}
@@ -37,10 +43,10 @@
     <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-3">Controls</h2>
     <form method="post" action="/controls" class="flex flex-wrap gap-2 text-sm">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button name="action" value="skip"    class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Skip</button>
-      <button name="action" value="pause"   class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Pause</button>
-      <button name="action" value="resume"  class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Resume</button>
-      <button name="action" value="refresh_playlist" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Rescan playlist</button>
+      <button name="action" value="previous" aria-label="Go to previous track" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600" title="Go to previous track — affects everyone listening">⏮ Previous</button>
+      <button name="action" value="skip" aria-label="Skip to next track"   class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600" title="Skip to next track — affects everyone listening">Next ⏭</button>
+      {% if now.is_paused %}<button name="action" value="resume" aria-label="Resume playback" class="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600" title="Resume playback for everyone listening">▶ Resume</button>{% else %}<button name="action" value="pause" aria-label="Pause playback" class="px-3 py-1.5 rounded bg-amber-700 hover:bg-amber-600" title="Pause playback for everyone listening">⏸ Pause</button>{% endif %}
+      <button name="action" value="refresh_playlist" aria-label="Rescan playlist" title="Rescan library for new tracks" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">Rescan playlist</button>
     </form>
     <form method="post" action="/controls/volume" class="mt-4 flex items-center gap-2 text-sm">
       <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -52,10 +58,16 @@
       <span class="text-xs text-slate-500">Global to everyone in this voice channel</span>
     </form>
     {% if pending %}
-      <p class="mt-3 text-xs text-amber-400">Pending: {{ pending|length }} command(s) waiting for the bot.</p>
+      <p class="mt-3 text-xs text-amber-400" role="status" aria-live="polite">Pending: {{ pending|length }} command(s) waiting for the bot.</p>
     {% endif %}
     {% if command_flash %}
-      <p class="mt-3 text-xs text-emerald-400">{{ command_flash }}</p>
+      <p class="mt-3 text-xs text-emerald-400" role="status" aria-live="polite">{{ command_flash }}</p>
     {% endif %}
   </section>
+  {% if track_title %}<script>document.title={{ (track_title ~ " — TV Bot") | tojson }};</script>{% endif %}
+  {% if track_duration %}
+  <script>(function(){var bar=document.getElementById('progress-bar'),wrap=document.getElementById('progress-wrap'),el=document.getElementById('elapsed'),rem=document.getElementById('remaining');if(!bar)return;var pos={{ now.playback_position_seconds }},dur={{ track_duration }},paused={{ 'true' if now.is_paused else 'false' }};if(paused)return;function fmt(s){var h=Math.floor(s/3600),m=Math.floor(s%3600/60),sec=s%60;if(h>0)return h+":"+String(m).padStart(2,"0")+":"+String(sec).padStart(2,"0");return m+":"+String(sec).padStart(2,"0");}function hms(s){if(s<=0)return "0s";var h=Math.floor(s/3600),m=Math.floor(s%3600/60),sec=s%60;var p=[];if(h)p.push(h+"h");if(m)p.push(m+"m");if(sec&&!h)p.push(sec+"s");return p.join(" ")||"0s";}function tick(){pos+=1;var pct=Math.min(100,pos*100/dur);bar.style.width=pct+'%';if(wrap){wrap.setAttribute('aria-valuenow',pos);wrap.setAttribute('aria-valuetext',Math.round(pct)+'%');wrap.title=fmt(pos)+' / '+hms(dur);}if(el)el.textContent=fmt(pos);if(rem)rem.textContent="· "+hms(Math.max(0,dur-pos))+" left";if(pos>=dur)setTimeout(function(){location.reload()},800);};setInterval(tick,1000);var remaining=Math.max(5,(dur-pos))*1000;setTimeout(function(){location.reload()},remaining+1200);})()</script>
+  {% else %}
+  <script>setTimeout(function(){location.reload()},30000)</script>
+  {% endif %}
 {% endblock %}

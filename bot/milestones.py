@@ -18,10 +18,30 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from bot.titles import display_title
 from db.database import Database
+from db.guilds import apply_guild_config, get_guild_config
 from db.models import MILESTONES
 
 log = logging.getLogger(__name__)
+
+
+async def find_channel(client: Any, channel_id: int | None):
+    """Cache lookup with one API-fetch fallback.
+
+    ``get_channel`` misses happen transiently (gateway reconnects, partial
+    cache) even for channels that still exist — without the fetch fallback
+    the Now Playing embed / milestone shout is silently skipped.
+    """
+    if channel_id is None:
+        return None
+    ch = client.get_channel(channel_id)
+    if ch is None:
+        try:
+            ch = await client.fetch_channel(channel_id)
+        except Exception:  # deleted channel, missing access, network flake
+            return None
+    return ch
 
 
 @dataclass(slots=True, frozen=True)
@@ -74,24 +94,47 @@ class MilestoneChecker:
 class MilestoneAnnouncer:
     """Discord-side wrapper: check + post to the configured text channel."""
 
-    def __init__(self, *, client: Any, text_channel_id: int, db: Database) -> None:
+    def __init__(
+        self, *, client: Any, text_channel_id: int, db: Database, guild_id: str = ""
+    ) -> None:
         self.client = client
         self.text_channel_id = text_channel_id
+        self.db = db
+        self.guild_id = guild_id
         self.checker = MilestoneChecker(db)
 
     async def check_and_announce(self, user_id: str) -> list[Milestone]:
         milestones = self.checker.check_user(user_id)
         if not milestones:
             return []
-        channel = self.client.get_channel(self.text_channel_id)
+        if not self.text_channel_id:
+            return milestones
+        channel = await find_channel(self.client, self.text_channel_id)
         if channel is None:
             log.warning(
                 "cannot announce milestones: text channel %s not found", self.text_channel_id
             )
             return milestones
+        import discord
+
         for m in milestones:
             try:
                 await channel.send(f"🎉 <@{m.user_id}> just reached **{m.hours} hours** watched!")
+            except discord.Forbidden:
+                log.warning(
+                    "cannot announce milestones: missing access to text channel %s",
+                    self.text_channel_id,
+                )
+                self.text_channel_id = None
+                cfg = get_guild_config(self.db, self.guild_id)
+                if cfg:
+                    apply_guild_config(
+                        self.db,
+                        self.guild_id,
+                        enabled=cfg.enabled,
+                        voice_channel_id=cfg.voice_channel_id,
+                        text_channel_id=None,
+                    )
             except Exception:  # pragma: no cover — network flake
                 log.exception("failed to announce milestone %s for %s", m.hours, user_id)
         return milestones
@@ -136,12 +179,15 @@ class NowPlaying:
 
     async def post_or_replace(self, track) -> None:  # pragma: no cover — discord I/O
         """Delete previous embed (if any), post a fresh one, remember its id."""
+        if not self.text_channel_id:
+            return
+
         import discord
 
         if self._update_task and not self._update_task.done():
             self._update_task.cancel()
 
-        channel = self.client.get_channel(self.text_channel_id)
+        channel = await find_channel(self.client, self.text_channel_id)
         if channel is None:
             log.warning("cannot post Now Playing: text channel not found")
             return
@@ -157,7 +203,7 @@ class NowPlaying:
         # Playlist size — best-effort read (bot's DB doesn't have it, so leave blank).
         embed = discord.Embed(
             title="🎙️ Now Playing",
-            description=f"**{track.title}**",
+            description=f"**{display_title(track.title)}**",
             colour=discord.Colour.blurple(),
         )
         embed.add_field(name="Duration", value=self._fmt_duration(track.duration_seconds))
@@ -166,6 +212,22 @@ class NowPlaying:
 
         try:
             msg = await channel.send(embed=embed)
+        except discord.Forbidden:
+            log.warning(
+                "cannot post Now Playing: missing access to text channel %s",
+                self.text_channel_id,
+            )
+            self.text_channel_id = None
+            cfg = get_guild_config(self.db, self.guild_id)
+            if cfg:
+                apply_guild_config(
+                    self.db,
+                    self.guild_id,
+                    enabled=cfg.enabled,
+                    voice_channel_id=cfg.voice_channel_id,
+                    text_channel_id=None,
+                )
+            return
         except Exception:
             log.exception("could not post Now Playing embed")
             return
@@ -173,10 +235,15 @@ class NowPlaying:
 
     async def update_watcher_count(self) -> None:
         """Edit the current Now Playing message to update the currently watching count."""
+        if not self.text_channel_id:
+            return
+
+        import discord
+
         prev_id = self.state.now_playing_message_id
         if not prev_id:
             return
-        channel = self.client.get_channel(self.text_channel_id)
+        channel = await find_channel(self.client, self.text_channel_id)
         if channel is None:
             return
         try:
@@ -193,6 +260,21 @@ class NowPlaying:
                         )
                         await msg.edit(embed=embed)
                         break
+        except discord.Forbidden:
+            log.warning(
+                "cannot update Now Playing: missing access to text channel %s",
+                self.text_channel_id,
+            )
+            self.text_channel_id = None
+            cfg = get_guild_config(self.db, self.guild_id)
+            if cfg:
+                apply_guild_config(
+                    self.db,
+                    self.guild_id,
+                    enabled=cfg.enabled,
+                    voice_channel_id=cfg.voice_channel_id,
+                    text_channel_id=None,
+                )
         except Exception:
             log.debug("could not update watcher count on message %s", prev_id)
 

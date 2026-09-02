@@ -5,6 +5,7 @@ Endpoints mirror the bot-side client (provider.client.FileProviderClient):
     GET  /health                        provider health snapshot
     GET  /current                       -> TrackPayload
     POST /next                          -> TrackPayload
+    POST /previous                      -> TrackPayload
     GET  /peek?count=N                  -> list[TrackPayload]
     GET  /tracks/{track_id}             -> TrackPayload (force fetch)
     POST /tracks/{track_id}/played      no-op ack
@@ -80,6 +81,15 @@ def create_app(service: Service | None = None) -> FastAPI:
         except ProviderFetchError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    @app.post("/previous")
+    def post_previous() -> JSONResponse:
+        try:
+            return JSONResponse(svc().previous().to_dict())
+        except PlaylistEmpty as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ProviderFetchError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     @app.get("/peek")
     def get_peek(count: int = Query(5, ge=1, le=100)) -> JSONResponse:
         return JSONResponse([p.to_dict() for p in svc().peek(count)])
@@ -127,7 +137,11 @@ def create_app(service: Service | None = None) -> FastAPI:
     @app.post("/refresh")
     def post_refresh(payload: dict | None = None) -> dict:
         items = payload.get("archive_org_items") if payload else None
-        return svc().refresh_playlist(archive_org_items=items)
+        return svc().refresh_playlist(
+            archive_org_items=items,
+            gdrive_webdav_url=payload.get("gdrive_webdav_url") if payload else None,
+            gdrive_webdav_path=payload.get("gdrive_webdav_path") if payload else None,
+        )
 
     return app
 

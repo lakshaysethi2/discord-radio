@@ -4,7 +4,8 @@
 # Nothing needs to run on the host except Docker itself.
 #
 # Services:
-#   file-provider  ─ FastAPI + Telethon/Local backends
+#   file-provider  ─ FastAPI + Telethon/Local/WebDAV backends
+#   rclone-webdav  ─ shared rclone sidecar (see hawkins-library compose; serves HTTP :8080 + WebDAV :8081)
 #   bot            ─ Discord bot (long-running)
 #   dashboard      ─ FastAPI admin UI
 #   test           ─ one-shot: pytest against the mounted source tree
@@ -30,16 +31,42 @@ services:
       LOCAL_MEDIA_PATH: /media
       FILE_PROVIDER_HOST: 0.0.0.0
       FILE_PROVIDER_PORT: 8001
+    ports:
+      - "8001:8001"
     volumes:
       - ./data:/data
       - ./cache:/cache
       - ./media:/media:ro
+    networks:
+      - default
+      - gatus_default
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).status==200 else 1)"]
       interval: 30s
       timeout: 5s
       start_period: 15s
       retries: 3
+
+  # Restart the shared hawkins-library rclone sidecar if it dies. The radio
+  # cannot fetch Drive tracks without http://rclone-webdav:8081.
+  rclone-guard:
+    image: docker:cli
+    container_name: tvbot-rclone-guard
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "watching rclone-serve"
+        while true; do
+          st=$$(docker inspect -f '{{.State.Status}}' rclone-serve 2>/dev/null || echo missing)
+          if [ "$$st" != "running" ]; then
+            echo "rclone-serve is $$st — docker start"
+            docker start rclone-serve || true
+          fi
+          sleep 30
+        done
 
   bot:
     build:
@@ -81,6 +108,7 @@ services:
     command: >
       python -m uvicorn dashboard.main:app
       --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*
+      --log-level warning
     ports:
       - "${DASHBOARD_PORT:-8000}:8000"
     volumes:
@@ -116,6 +144,8 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONPATH: /app
       HOME: /tmp  # numeric uid without a homedir → point HOME somewhere writable
+      RUFF_CACHE_DIR: /tmp/ruff_cache
+      PYTEST_ADDOPTS: "-o cache_dir=/tmp/pytest_cache"
     entrypoint: ["/usr/bin/tini", "--"]
     command: ["python", "-m", "pytest", "-q"]
 
@@ -138,3 +168,7 @@ services:
     entrypoint: ["/bin/bash"]
     stdin_open: true
     tty: true
+
+networks:
+  gatus_default:
+    external: true

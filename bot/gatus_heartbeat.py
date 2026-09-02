@@ -25,11 +25,17 @@ starts the task when both are present.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
 log = logging.getLogger(__name__)
+
+# Captain 2026-08-08: radio must never be silent >10s when someone is in
+# voice (5s ideal, 10s hard limit). 60s was way too much.
+SILENCE_THRESHOLD_SECONDS = 10.0
 
 # Gatus derives the external-endpoint key from group "radio" + name
 # "discord-radio voice" (spaces -> dashes): radio_discord-radio-voice.
@@ -55,17 +61,71 @@ class HeartbeatHttpClient(Protocol):
     ) -> Any: ...
 
 
-def is_radio_healthy(stations: Mapping[str, object]) -> bool:
-    """True when at least one live Station has a connected voice client.
+def is_radio_healthy(stations: Mapping[str, object], *, now: float | None = None, silence_threshold: float = SILENCE_THRESHOLD_SECONDS) -> bool:
+    """True when the radio is healthy for the current listening state.
+
+    Rules (captain, 2026-08-08):
+
+    * Nobody listening anywhere → healthy even if silent — silence is fine
+      when the pausing logic (``RadioClock`` + ``should_pause``) froze it.
+      Radio is PAUSED when 0 listeners.
+    * Someone is listening (>=1 in voice) → unhealthy if voice is
+      disconnected OR playback has been silent for more than
+      ``silence_threshold`` (default 10s, 5s ideal). That catches a frozen
+      FUSE (dead ``tvbot-rclone-mount``), stuck file-provider, or dropped
+      voice/ffmpeg empty output.
 
     ``stations`` is the authoritative per-guild structure built in
-    ``bot.main``: Station objects are registered only for *enabled* guilds
-    that successfully joined voice. A station whose Discord voice connection
-    has dropped silently stays in the dict — ``voice_client.is_connected()``
-    is what reveals the dead link, which is precisely the failure mode this
-    heartbeat exists to catch.
+    ``bot.main``: Station objects only for *enabled* guilds that joined
+    voice. A dropped voice connection keeps the Station —
+    ``voice_client.is_connected()`` reveals it.
     """
-    return any(st.voice_client.is_connected() for st in stations.values())
+    # No listeners anywhere: silence is intentional (radio is paused).
+    any_listeners = any(getattr(st, "listener_count", 0) > 0 for st in stations.values())
+    if not any_listeners:
+        return True
+    # Someone is listening — every listening station must be healthy.
+    cur = now if now is not None else time.monotonic()
+    for st in stations.values():
+        if getattr(st, "listener_count", 0) <= 0:
+            continue
+        vc = getattr(st, "voice_client", None)
+        if vc is None or not vc.is_connected():
+            return False
+        player = getattr(st, "player", None)
+        if player is None:
+            continue
+        if not player.is_playing():
+            # Paused-by-logic stations flip listener_count to 0 before
+            # is_paused, so a non-zero listener_count + not-playing really
+            # means unexpected silence, not an intentional pause.
+            if getattr(st, "is_paused", False):
+                continue
+            # Enforce 10s silence limit: track when this station went silent.
+            # Store monotonic timestamp on the station itself (transient, not
+            # persisted) — avoids extra global state and works per-station.
+            attr = "_gatus_silence_since"
+            since = getattr(st, attr, None)
+            if since is None:
+                # First silent sample — record start, but don't fail yet
+                # (transient gap between tracks is <2s).
+                with contextlib.suppress(Exception):
+                    setattr(st, attr, cur)
+                # If threshold is 0, fail immediately; otherwise wait.
+                if silence_threshold <= 0:
+                    return False
+                continue
+            if cur - float(since) >= silence_threshold:
+                return False
+        else:
+            # Playing again — clear silence marker.
+            with contextlib.suppress(Exception):
+                if hasattr(st, "_gatus_silence_since"):
+                    delattr(st, "_gatus_silence_since")
+            # Also clear via assignment for slots-based dataclasses.
+            with contextlib.suppress(Exception):
+                st._gatus_silence_since = None  # type: ignore[attr-defined]
+    return True
 
 
 class GatusHeartbeat:
@@ -76,12 +136,17 @@ class GatusHeartbeat:
         *,
         push_url: str,
         push_token: str,
-        interval_seconds: int | float = 30,
+        interval_seconds: int | float = 5,
     ) -> None:
         self.push_url = push_url.rstrip("/")
         self.push_token = push_token
         # Guard against a misconfigured 0/negative interval busy-looping.
+        # Captain: 5s cadence so a 10s silence threshold is caught promptly
+        # (30s was too slow — 60s window was way too much).
         self.interval_seconds = interval_seconds if interval_seconds > 0 else 1
+        if self.interval_seconds > 10:
+            log.warning("gatus heartbeat interval %s >10s clamped to 5s for 10s silence SLA", self.interval_seconds)
+            self.interval_seconds = 5
         self._headers = {"Authorization": f"Bearer {push_token}"}
         self._previous_healthy: bool | None = None
 

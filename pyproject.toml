@@ -34,7 +34,8 @@ filterwarnings = [
     "ignore::DeprecationWarning:websockets",
     "ignore::DeprecationWarning:audioop",
     "ignore::DeprecationWarning:httpx",  # per-request cookies=<...> deprecation
-    "ignore::starlette.routing.StarletteDeprecationWarning",
+    "ignore::DeprecationWarning:starlette",
+    "ignore::Warning:starlette",
 ]
 
 [tool.coverage.run]

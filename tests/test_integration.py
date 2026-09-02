@@ -75,6 +75,13 @@ class TestContract:
             third = await fp.next()  # -> wraps to 0
         assert third.playlist_position == 0
 
+    async def test_previous_steps_back(self, bot_client):
+        async with bot_client as fp:
+            await fp.next()
+            prev = await fp.previous()
+        assert prev.playlist_position == 0
+        assert prev.title == "aaa"
+
     async def test_peek(self, bot_client):
         async with bot_client as fp:
             peek = await fp.peek(3)
