@@ -1,6 +1,7 @@
 # Incident — bot leaves/rejoins voice ~120×/hour (2026-10-04)
 
 Investigated read-only on prod (`tvbot-bot`). No code changed.
+**RESOLVED 2026-10-04 — see "Resolution" at the bottom (commit `40df6b9`).**
 
 ## Symptom
 
@@ -69,13 +70,48 @@ the failure instead of surfacing it.
 - Why it never escapes: `recover_silent_playback` resetting the cursor to 0 on
   each reconnect.
 
-## Proposed follow-ups (not applied)
+## Proposed follow-ups
 
-1. Stop resetting the shared cursor in silence recovery; restart only after the
-   10s silence threshold, keeping the current position.
-2. Investigate the 2.26 GB `webdav_c6a63726aa74b687` track.
+1. ~~Stop resetting the shared cursor in silence recovery~~ — **APPLIED**
+   (`40df6b9`): recovery resumes at `radio.position()`, gated 5s behind the
+   first silent sample; see Resolution.
+2. Investigate the 2.26 GB `webdav_c6a63726aa74b687` track. Still open: it is
+   the current row (`duration_seconds: 0`, `has_video: true`) and every resume
+   seeks inside it.
 3. Cache is at 96% of its 10 GiB cap (`/health`: cache_bytes 10304036231 /
-   cache_max_bytes 10737418240) — prune policy needs a look.
+   cache_max_bytes 10737418240) — prune policy needs a look. Still open.
 4. file-provider prefetch failures for dead rows:
    `Inbox/old-hadalready/*.mp3 → HTTP 404` (webdav) and
    `Hawkins_Lectures_transcoded_actual_files/*.mp3 → HTTP 500` (archive.org).
+   Still open.
+
+## Resolution (2026-10-04, `40df6b9`, deployed same day)
+
+`recover_silent_playback()` no longer slams the cursor to 0. It now:
+
+- waits `RECOVER_SILENCE_GATE_SECONDS` (5s) of real silence before acting — the
+  timer arms *while the voice link is down*, so reconnect latency is unchanged,
+  and the gate sits strictly under the 10s monitor threshold so a working
+  recovery still beats Gatus to red (an instant "recovery" is what hid this);
+- resumes at `radio.position()`, like any late joiner;
+- calls `provider.next()` if the cursor ran past the current row's end;
+- restarts from the top only after `RECOVER_POSITION_GIVEUP_SECONDS` (8s) of
+  silence *following* an offset restart — sound beats position fidelity.
+
+Prod evidence after `docker compose up -d bot`: one continuous voice connection
+from 16:13:36, 0 disconnects and 0 silence-recovery events across listener
+sessions 1355/1357/1358 (was ~2 cycles/min), cursor advanced 146s → 203s,
+`radio/discord-radio voice` green.
+
+Why the Discord-side session kills stopped: with the cursor preserved each
+reconnect seeks into the cache instead of re-spawning ffmpeg on the 2.26 GB file
+from byte 0, so the IO stall that starved voice feeding (incident hypothesis)
+never gets going.
+
+Known rough edges (left alone, harmless):
+
+- If the clock is frozen and we fall back to `seek = 0`, `sync_radio_state()`
+  resumes the clock at the old offset while audio starts at 0 — a brief
+  desync that self-corrects on the next track change.
+- `_silence_since` markers aren't cleared when a station drops to 0 listeners;
+  a listener rejoining within the gate window may recover up to 5s early.
