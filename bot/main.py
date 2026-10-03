@@ -273,6 +273,24 @@ async def ensure_station_voice_connected(client: object, station: Station) -> bo
     return True
 
 
+# Occupied-channel silence must persist before recovery kicks in: a voice
+# reconnect costs a tick or two, and firing on the *first* silent sample both
+# respawns ffmpeg needlessly and hides a genuine outage from the Gatus monitor
+# (playback "recovered" instantly, so the 10s silence SLA never tripped).
+# Strictly below gatus_heartbeat.SILENCE_THRESHOLD_SECONDS so a recovery that
+# does work still beats the monitor to red.
+RECOVER_SILENCE_GATE_SECONDS = 5.0
+
+# After this much uninterrupted silence — i.e. a restart at the shared position
+# already happened and produced no audio (seek past EOF on a row with an
+# unknown duration, unreadable cache file) — fall back to the top of the track.
+# Position fidelity is worth less than sound: it re-arms at the top only for a
+# track that is already playing nothing. Kept below
+# gatus_heartbeat.SILENCE_THRESHOLD_SECONDS so the fallback still beats the
+# monitor to red.
+RECOVER_POSITION_GIVEUP_SECONDS = 8.0
+
+
 async def recover_silent_playback(
     stations: dict[str, Station],
     provider,
@@ -280,27 +298,60 @@ async def recover_silent_playback(
     state: BotState,
     *,
     admin_paused: bool,
+    silence_gate: float = RECOVER_SILENCE_GATE_SECONDS,
+    now: float | None = None,
 ) -> bool:
     """Restart audio when listeners are present but nothing is playing.
 
     ``_advance_and_announce`` used to give up after 10 failed ``/next`` calls
     and stay silent until a join/leave. Occupied-channel silence is an SLA
-    failure, so this retries ``provider.current()`` and starts every occupied
-    station. Returns True if playback was restarted.
+    failure, so this retries the provider and starts every occupied station,
+    but only once silence has lasted ``silence_gate`` seconds.
+
+    The shared cursor is **preserved**: playback resumes at ``radio.position()``
+    exactly like a late joiner. It used to ``radio.reset(0)``, which during the
+    2026-10-04 voice-reconnect storm (~120 leave/rejoin cycles per hour) made
+    the radio replay the same ~25s slice from the top forever and never
+    advance — see ``docs/incident-2026-10-04-voice-reconnect-storm.md``.
+
+    Returns True if playback was restarted.
     """
     if admin_paused:
         return False
+    # Time the silence across *all* stations with listeners, including ones
+    # whose voice link just dropped — otherwise the gate would only start
+    # counting once the reconnect finished, adding a tick of dead air.
+    listening = [s for s in stations.values() if s.listener_count > 0]
+    if not listening:
+        return False
+    if any(s.player.is_playing() for s in listening):
+        # Audible again — clear the silence markers so a later outage is timed
+        # from its own first silent sample, not from this one.
+        for st in listening:
+            with contextlib.suppress(Exception):
+                if hasattr(st, "_silence_since"):
+                    delattr(st, "_silence_since")
+        return False
+
+    cur = time.monotonic() if now is None else now
+    for st in listening:
+        if getattr(st, "_silence_since", None) is None:
+            st._silence_since = cur  # type: ignore[attr-defined]
+    silent_for = min(cur - float(getattr(st, "_silence_since", cur)) for st in listening)
+    if silent_for < silence_gate:
+        return False
+
+    # Only now is it worth restarting anything: the caller reconnects dropped
+    # voice clients before we get here, so anything still down stays down.
     occupied = [
         s
-        for s in stations.values()
-        if s.listener_count > 0
-        and s.voice_client is not None
-        and getattr(s.voice_client, "is_connected", lambda: False)()
+        for s in listening
+        if s.voice_client is not None and getattr(s.voice_client, "is_connected", lambda: False)()
     ]
     if not occupied:
         return False
-    if any(s.player.is_playing() for s in occupied):
-        return False
+
+    seek = radio.position()
     try:
         nxt = await provider.current()
     except Exception as exc:
@@ -309,15 +360,51 @@ async def recover_silent_playback(
     if not nxt.ready or not nxt.local_path:
         log.warning("silence recovery: track %s not ready", nxt.track_id)
         return False
-    radio.reset(0)
-    state.playback_position_seconds = 0
+    if nxt.duration_seconds > 0 and seek >= nxt.duration_seconds:
+        # Cursor ran past the end of the current row while we were down — start
+        # the next track at 0 instead of ffmpeg EOF-ing instantly (which would
+        # re-trigger this loop every cycle).
+        log.info(
+            "silence recovery: cursor %.0fs past end of %s — advancing",
+            seek - nxt.duration_seconds,
+            nxt.track_id,
+        )
+        try:
+            nxt = await provider.next()
+        except Exception as exc:
+            log.warning("silence recovery: provider.next failed: %s", exc)
+            return False
+        if not nxt.ready or not nxt.local_path:
+            log.warning("silence recovery: track %s not ready", nxt.track_id)
+            return False
+        seek = 0.0
+
+    if seek > 1.0 and silent_for >= RECOVER_POSITION_GIVEUP_SECONDS:
+        # Already restarted at the shared position in this same silence episode
+        # and still nothing: the offset is the problem, not the connection.
+        log.warning(
+            "silence recovery: %.1fs silent — giving up on offset %ds, restarting %s from the top",
+            silent_for,
+            int(seek),
+            nxt.track_id,
+        )
+        seek = 0.0
+
+    state.playback_position_seconds = int(seek)
+    # No cursor mutation: just make sure the clock ticks from where it is (it
+    # may be frozen if the last listener left during the outage).
     sync_radio_state(stations, radio, state, admin_paused=admin_paused)
     for st in occupied:
         try:
-            await st.player.start(nxt)
+            await st.player.start(nxt, seek_seconds=seek)
         except Exception as exc:
             log.warning("silence recovery: station %s start failed: %s", st.guild_id, exc)
-    log.warning("silence recovery: restarted %s", nxt.track_id)
+    log.warning(
+        "silence recovery: resumed %s at %ds (silent for %.1fs)",
+        nxt.track_id,
+        int(seek),
+        silent_for,
+    )
     return True
 
 
