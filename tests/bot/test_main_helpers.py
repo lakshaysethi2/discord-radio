@@ -136,25 +136,78 @@ class TestResumeOrStart:
 
 
 class TestRecoverSilentPlayback:
-    async def test_restarts_when_occupied_and_silent(self, state: BotState) -> None:
-        player = FakePlayer(playing=False)
+    def _station(self, player):  # type: ignore[no-untyped-def]
         vc = type("VC", (), {"is_connected": lambda self: True})()
-        station = type(
+        return type(
             "S",
             (),
             {"listener_count": 1, "player": player, "guild_id": "g", "voice_client": vc},
         )()
+
+    async def test_gate_arms_then_resumes_at_radio_position(self, state: BotState) -> None:
+        player = FakePlayer(playing=False)
+        station = self._station(player)
         radio = RadioClock()
+        radio.start(8700.0)
         prov = ScriptedProvider([make_track(title="Recovered")])
+        # First silent sample only arms the 5s gate — no restart yet.
+        assert (
+            await recover_silent_playback(
+                {"g": station},  # type: ignore[arg-type]
+                prov,
+                radio,
+                state,
+                admin_paused=False,
+                now=1000.0,
+            )
+            is False
+        )
+        assert player.started == []
+        # Past the gate: resume at the shared cursor, never reset to 0.
         ok = await recover_silent_playback(
             {"g": station},  # type: ignore[arg-type]
             prov,
             radio,
             state,
             admin_paused=False,
+            now=1005.0,
         )
         assert ok is True
         assert player.started[0][0].title == "Recovered"
+        assert abs(player.started[0][1] - 8700.0) < 5.0
+        assert state.playback_position_seconds == int(player.started[0][1])
+
+    async def test_gate_cleared_when_audio_returns(self, state: BotState) -> None:
+        player = FakePlayer(playing=False)
+        station = self._station(player)
+        radio = RadioClock()
+        radio.start(10.0)
+        prov = ScriptedProvider([make_track(title="Recovered")])
+        assert (
+            await recover_silent_playback(
+                {"g": station},  # type: ignore[arg-type]
+                prov,
+                radio,
+                state,
+                admin_paused=False,
+                now=1000.0,
+            )
+            is False
+        )
+        # Audio came back on its own — gate drops, next silence starts fresh.
+        player._playing = True
+        assert (
+            await recover_silent_playback(
+                {"g": station},  # type: ignore[arg-type]
+                prov,
+                radio,
+                state,
+                admin_paused=False,
+                now=1001.0,
+            )
+            is False
+        )
+        assert getattr(radio, "_silence_recovery_since", None) is None
 
     async def test_noop_when_voice_client_disconnected(self, state: BotState) -> None:
         player = FakePlayer(playing=False)

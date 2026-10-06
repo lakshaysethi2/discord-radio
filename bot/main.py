@@ -358,6 +358,12 @@ async def ensure_station_voice_connected(
     return True
 
 
+# Silence must persist this long before the recovery loop restarts audio —
+# transient gaps (track transitions, sub-5s voice reconnects) must not trigger
+# a resume on the first silent sample (orc 40df6b9 behavior).
+SILENCE_RECOVERY_GATE_SECONDS = 5.0
+
+
 async def recover_silent_playback(
     stations: dict[str, Station],
     provider,
@@ -365,13 +371,20 @@ async def recover_silent_playback(
     state: BotState,
     *,
     admin_paused: bool,
+    silence_gate_seconds: float = SILENCE_RECOVERY_GATE_SECONDS,
+    now: float | None = None,
 ) -> bool:
-    """Restart audio when listeners are present but nothing is playing.
+    """Resume (not restart) audio when listeners are present but silent.
 
     ``_advance_and_announce`` used to give up after 10 failed ``/next`` calls
     and stay silent until a join/leave. Occupied-channel silence is an SLA
-    failure, so this retries ``provider.current()`` and starts every occupied
-    station. Returns True if playback was restarted.
+    failure, so this retries ``provider.current()`` and resumes every
+    occupied station. Returns True if playback was resumed.
+
+    Port of orc 40df6b9: the shared cursor is preserved — stations resume at
+    ``radio.position()`` instead of replaying from 0 (the old ``reset(0)``
+    replayed the same slice on every storm reconnect) — and recovery only
+    fires after ``silence_gate_seconds`` of continuous silence.
     """
     if admin_paused:
         return False
@@ -385,7 +398,23 @@ async def recover_silent_playback(
     if not occupied:
         return False
     if any(s.player.is_playing() for s in occupied):
+        # Audio back on its own — drop the gate so the next silence starts fresh.
+        with contextlib.suppress(Exception):
+            if hasattr(radio, "_silence_recovery_since"):
+                delattr(radio, "_silence_recovery_since")
         return False
+    cur = now if now is not None else time.monotonic()
+    if silence_gate_seconds > 0:
+        since = getattr(radio, "_silence_recovery_since", None)
+        if since is None:
+            # First silent sample — arm the gate, don't restart yet.
+            radio._silence_recovery_since = cur  # type: ignore[attr-defined]
+            return False
+        silent_for = cur - float(since)
+        if silent_for < silence_gate_seconds:
+            return False
+    else:
+        silent_for = 0.0
     try:
         nxt = await provider.current()
     except Exception as exc:
@@ -399,15 +428,24 @@ async def recover_silent_playback(
             "silence recovery: track %s is video with unknown duration — end-of-track advance may stall",
             nxt.track_id,
         )
-    radio.reset(0)
-    state.playback_position_seconds = 0
+    # Preserve the shared cursor: resume where the radio is, never reset to 0.
+    seek = radio.position()
+    state.playback_position_seconds = int(seek)
     sync_radio_state(stations, radio, state, admin_paused=admin_paused)
     for st in occupied:
         try:
-            await st.player.start(nxt)
+            await st.player.start(nxt, seek_seconds=seek)
         except Exception as exc:
             log.warning("silence recovery: station %s start failed: %s", st.guild_id, exc)
-    log.warning("silence recovery: restarted %s", nxt.track_id)
+    with contextlib.suppress(Exception):
+        if hasattr(radio, "_silence_recovery_since"):
+            delattr(radio, "_silence_recovery_since")
+    log.warning(
+        "silence recovery: resumed %s at %ds (silent for %.1fs)",
+        nxt.track_id,
+        int(seek),
+        silent_for,
+    )
     return True
 
 
