@@ -41,6 +41,13 @@ from bot.scheduler import Scheduler
 from bot.state import BotState, GuildScopedState
 from bot.titles import display_title
 from bot.tracker import SessionTracker
+from bot.voice_flap import (
+    FlapDecision,
+    VoiceFlapTracker,
+    close_code_str,
+    default_tracker,
+    extract_close_code,
+)
 from db import guilds as guilds_db
 from db.database import Database
 from provider.client import FileProviderClient, ProviderError, TrackResponse
@@ -209,21 +216,89 @@ def sync_radio_state(
     return should_play
 
 
-async def ensure_station_voice_connected(client: object, station: Station) -> bool:
+def handle_bot_voice_disconnect(
+    station: Station,
+    *,
+    tracker: VoiceFlapTracker | None = None,
+    close_code: int | None = None,
+) -> FlapDecision:
+    """Record a Discord-side voice kick: metric++, flap verdict, coded log.
+
+    Called from ``on_voice_state_update``'s bot-disconnected branch so *every*
+    drop logs its close code (the 4014/4022 kick signature was previously
+    invisible) and feeds the flap detector (issue #27). Clears both
+    ``station.voice_client`` and ``player.voice_client`` so the watchdog
+    reconnects them in sync; returns the flap verdict for the caller.
+    """
+    trk = tracker if tracker is not None else default_tracker()
+    if close_code is None:
+        close_code = extract_close_code(station.voice_client)
+    decision = trk.record_disconnect(station.guild_id, close_code=close_code)
+    total = trk.voice_cycles_total(station.guild_id)
+    if decision.is_flap:
+        log.warning(
+            "guild %s: bot was disconnected from voice channel by Discord "
+            "(close_code=%s, cycle #%d, %d kicks in 5m — FLAP, full reset next)",
+            station.guild_id,
+            close_code_str(close_code),
+            total,
+            decision.kick_count,
+        )
+    else:
+        log.warning(
+            "guild %s: bot was disconnected from voice channel by Discord "
+            "(close_code=%s, cycle #%d)",
+            station.guild_id,
+            close_code_str(close_code),
+            total,
+        )
+    station.voice_client = None
+    # Keep the player in sync: otherwise Player.start keeps raising
+    # "not connected" against the dead client until the heal loop runs.
+    with contextlib.suppress(AttributeError):
+        station.player.voice_client = None
+    return decision
+
+
+async def ensure_station_voice_connected(
+    client: object,
+    station: Station,
+    *,
+    flap: VoiceFlapTracker | None = None,
+    sleep: Callable[[float], Awaitable[None]] | None = None,
+) -> bool:
     """Ensure station.voice_client is connected to the guild's voice channel.
 
     If disconnected, cleanly tears down any zombie voice client, reconnects to
     the channel, and updates both station.voice_client and station.player.
+
+    When the flap detector shows >=3 Discord kicks in 5 min (ghost session,
+    issue #27) this does a *full reset* instead: force-disconnect, exponential
+    backoff, then a fresh ``channel.connect(reconnect=False)`` that skips
+    discord.py's resume path — the equivalent of the manual container restart
+    that cleared the 2026-10-06 storm.
     """
     vc = station.voice_client
     if vc is not None and getattr(vc, "is_connected", lambda: False)():
         return True
 
-    log.warning(
-        "guild %s: voice disconnected or uninitialized — reconnecting to channel %s",
-        station.guild_id,
-        station.voice_channel_id,
-    )
+    tracker = flap if flap is not None else default_tracker()
+    flapping = tracker.is_flapping(station.guild_id)
+    backoff = tracker.backoff_for_guild(station.guild_id) if flapping else 0.0
+    if flapping:
+        log.warning(
+            "guild %s: voice flap detected (%d Discord kicks in 5m) — "
+            "full reset with %.0fs backoff",
+            station.guild_id,
+            tracker.kick_count(station.guild_id),
+            backoff,
+        )
+    else:
+        log.warning(
+            "guild %s: voice disconnected or uninitialized — reconnecting to channel %s",
+            station.guild_id,
+            station.voice_channel_id,
+        )
 
     guild = None
     with contextlib.suppress(Exception):
@@ -257,7 +332,17 @@ async def ensure_station_voice_connected(client: object, station: Station) -> bo
         return False
 
     try:
-        new_vc = await channel.connect(reconnect=True, timeout=30.0)
+        if flapping:
+            # Full reset: back off, then a fresh handshake (no resume) —
+            # discord.py's `_potential_reconnect` never recovers a ghost.
+            await (sleep or asyncio.sleep)(backoff)
+            new_vc = await channel.connect(reconnect=False, timeout=30.0)
+            log.warning(
+                "guild %s: full voice reset attempted after flap (fresh handshake)",
+                station.guild_id,
+            )
+        else:
+            new_vc = await channel.connect(reconnect=True, timeout=30.0)
     except Exception as exc:
         log.warning("guild %s: voice reconnect failed: %s", station.guild_id, exc)
         return False
@@ -273,6 +358,12 @@ async def ensure_station_voice_connected(client: object, station: Station) -> bo
     return True
 
 
+# Silence must persist this long before the recovery loop restarts audio —
+# transient gaps (track transitions, sub-5s voice reconnects) must not trigger
+# a resume on the first silent sample (orc 40df6b9 behavior).
+SILENCE_RECOVERY_GATE_SECONDS = 5.0
+
+
 async def recover_silent_playback(
     stations: dict[str, Station],
     provider,
@@ -280,13 +371,20 @@ async def recover_silent_playback(
     state: BotState,
     *,
     admin_paused: bool,
+    silence_gate_seconds: float = SILENCE_RECOVERY_GATE_SECONDS,
+    now: float | None = None,
 ) -> bool:
-    """Restart audio when listeners are present but nothing is playing.
+    """Resume (not restart) audio when listeners are present but silent.
 
     ``_advance_and_announce`` used to give up after 10 failed ``/next`` calls
     and stay silent until a join/leave. Occupied-channel silence is an SLA
-    failure, so this retries ``provider.current()`` and starts every occupied
-    station. Returns True if playback was restarted.
+    failure, so this retries ``provider.current()`` and resumes every
+    occupied station. Returns True if playback was resumed.
+
+    Port of orc 40df6b9: the shared cursor is preserved — stations resume at
+    ``radio.position()`` instead of replaying from 0 (the old ``reset(0)``
+    replayed the same slice on every storm reconnect) — and recovery only
+    fires after ``silence_gate_seconds`` of continuous silence.
     """
     if admin_paused:
         return False
@@ -300,7 +398,23 @@ async def recover_silent_playback(
     if not occupied:
         return False
     if any(s.player.is_playing() for s in occupied):
+        # Audio back on its own — drop the gate so the next silence starts fresh.
+        with contextlib.suppress(Exception):
+            if hasattr(radio, "_silence_recovery_since"):
+                delattr(radio, "_silence_recovery_since")
         return False
+    cur = now if now is not None else time.monotonic()
+    if silence_gate_seconds > 0:
+        since = getattr(radio, "_silence_recovery_since", None)
+        if since is None:
+            # First silent sample — arm the gate, don't restart yet.
+            radio._silence_recovery_since = cur  # type: ignore[attr-defined]
+            return False
+        silent_for = cur - float(since)
+        if silent_for < silence_gate_seconds:
+            return False
+    else:
+        silent_for = 0.0
     try:
         nxt = await provider.current()
     except Exception as exc:
@@ -309,15 +423,29 @@ async def recover_silent_playback(
     if not nxt.ready or not nxt.local_path:
         log.warning("silence recovery: track %s not ready", nxt.track_id)
         return False
-    radio.reset(0)
-    state.playback_position_seconds = 0
+    if nxt.has_video and nxt.unknown_duration:
+        log.warning(
+            "silence recovery: track %s is video with unknown duration — end-of-track advance may stall",
+            nxt.track_id,
+        )
+    # Preserve the shared cursor: resume where the radio is, never reset to 0.
+    seek = radio.position()
+    state.playback_position_seconds = int(seek)
     sync_radio_state(stations, radio, state, admin_paused=admin_paused)
     for st in occupied:
         try:
-            await st.player.start(nxt)
+            await st.player.start(nxt, seek_seconds=seek)
         except Exception as exc:
             log.warning("silence recovery: station %s start failed: %s", st.guild_id, exc)
-    log.warning("silence recovery: restarted %s", nxt.track_id)
+    with contextlib.suppress(Exception):
+        if hasattr(radio, "_silence_recovery_since"):
+            delattr(radio, "_silence_recovery_since")
+    log.warning(
+        "silence recovery: resumed %s at %ds (silent for %.1fs)",
+        nxt.track_id,
+        int(seek),
+        silent_for,
+    )
     return True
 
 
@@ -816,6 +944,11 @@ async def _resume_or_start(
             else:
                 track = await provider.current()
                 log.info("starting playback: %s", track.title)
+            if track.has_video and track.unknown_duration:
+                log.warning(
+                    "track %s is video with unknown duration — end-of-track advance may stall",
+                    track.track_id,
+                )
             await player.start(track, seek_seconds=resume_at)
             return
         except ProviderError as exc:
@@ -1400,11 +1533,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
         if client.user and member.id == client.user.id:
             station = stations.get(str(member.guild.id))
             if station is not None and after.channel is None:
-                log.warning(
-                    "guild %s: bot was disconnected from voice channel by Discord",
-                    station.guild_id,
-                )
-                station.voice_client = None
+                handle_bot_voice_disconnect(station)
             return
 
         if member.bot:

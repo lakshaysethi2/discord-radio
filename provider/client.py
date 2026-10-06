@@ -48,6 +48,16 @@ class TrackResponse:
     ready: bool
     has_video: bool = False
 
+    @property
+    def unknown_duration(self) -> bool:
+        """True when the provider never reported a usable duration (0/negative).
+
+        Video tracks with unknown duration are suspect (issue #27): the
+        cursor-past-end logic never fires for them, so a stall loops forever
+        instead of advancing.
+        """
+        return self.duration_seconds <= 0
+
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> TrackResponse:
         try:
