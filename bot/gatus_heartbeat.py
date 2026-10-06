@@ -140,13 +140,11 @@ def is_radio_healthy(
             if cur - float(since) >= silence_threshold:
                 return False
         else:
-            # Playing again — clear silence marker.
+            # Playing again — clear silence marker (delete only: the next
+            # silent sample then takes the first-sample path, as intended).
             with contextlib.suppress(Exception):
                 if hasattr(st, "_gatus_silence_since"):
                     delattr(st, "_gatus_silence_since")
-            # Also clear via assignment for slots-based dataclasses.
-            with contextlib.suppress(Exception):
-                st._gatus_silence_since = None  # type: ignore[attr-defined]
     return True
 
 

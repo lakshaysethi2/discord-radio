@@ -226,9 +226,9 @@ def handle_bot_voice_disconnect(
 
     Called from ``on_voice_state_update``'s bot-disconnected branch so *every*
     drop logs its close code (the 4014/4022 kick signature was previously
-    invisible) and feeds the flap detector (issue #27). Clears
-    ``station.voice_client`` so the watchdog reconnects; returns the flap
-    verdict for the caller.
+    invisible) and feeds the flap detector (issue #27). Clears both
+    ``station.voice_client`` and ``player.voice_client`` so the watchdog
+    reconnects them in sync; returns the flap verdict for the caller.
     """
     trk = tracker if tracker is not None else default_tracker()
     if close_code is None:
@@ -253,6 +253,10 @@ def handle_bot_voice_disconnect(
             total,
         )
     station.voice_client = None
+    # Keep the player in sync: otherwise Player.start keeps raising
+    # "not connected" against the dead client until the heal loop runs.
+    with contextlib.suppress(AttributeError):
+        station.player.voice_client = None
     return decision
 
 

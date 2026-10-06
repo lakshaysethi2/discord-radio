@@ -37,7 +37,9 @@ MAX_BACKOFF_SECONDS = 60.0  # backoff cap so recovery stays prompt
 
 # Close codes discord.py surfaces when the *server* kicks the bot off voice
 # (externally disconnected → `_potential_reconnect` → "Reconnect was
-# unsuccessful"). Logged on every drop so the kick signature is greppable.
+# unsuccessful"). Only these (plus unknown, see `is_server_kick`) advance the
+# flap window, so manual disconnects with a known-clean code can't false-trip
+# a full reset. Logged on every drop so the kick signature is greppable.
 EXTERNAL_KICK_CODES = frozenset({4014, 4022})
 
 
@@ -50,10 +52,21 @@ class FlapDecision:
     backoff_seconds: float  # full-reset backoff for this kick count
 
 
-def backoff_for(kick_count: int) -> float:
+def backoff_for(kick_count: int, *, threshold: int = FLAP_THRESHOLD) -> float:
     """Exponential backoff for the Nth in-window kick (capped)."""
-    extra = max(0, kick_count - FLAP_THRESHOLD)
+    extra = max(0, kick_count - threshold)
     return min(BASE_BACKOFF_SECONDS * (2.0**extra), MAX_BACKOFF_SECONDS)
+
+
+def is_server_kick(close_code: int | None) -> bool:
+    """True when a disconnect looks Discord-initiated.
+
+    discord.py rarely surfaces the voice WS close code on this path, so an
+    unknown code still counts (a real storm is usually code-invisible); a
+    *known* code outside 4014/4022 does not advance the flap window. The
+    cycle metric bumps either way — the watchdog must heal every drop.
+    """
+    return close_code is None or close_code in EXTERNAL_KICK_CODES
 
 
 def close_code_str(close_code: int | None) -> str:
@@ -104,11 +117,16 @@ class VoiceFlapTracker:
         close_code: int | None = None,
         now: float | None = None,
     ) -> FlapDecision:
-        """Record one Discord-side disconnect; total++ and flap verdict."""
+        """Record one Discord-side disconnect; total++ and flap verdict.
+
+        The cycle metric counts every drop; only server kicks (4014/4022 or
+        unknown — see `is_server_kick`) advance the flap window.
+        """
         cur = now if now is not None else time.monotonic()
         self._cycles[guild_id] = self._cycles.get(guild_id, 0) + 1
         buf = self._kicks.setdefault(guild_id, collections.deque())
-        buf.append(cur)
+        if is_server_kick(close_code):
+            buf.append(cur)
         cutoff = cur - self.window_seconds
         while buf and buf[0] < cutoff:
             buf.popleft()
@@ -116,7 +134,7 @@ class VoiceFlapTracker:
         return FlapDecision(
             is_flap=count >= self.threshold,
             kick_count=count,
-            backoff_seconds=backoff_for(count),
+            backoff_seconds=backoff_for(count, threshold=self.threshold),
         )
 
     def kick_count(self, guild_id: str, *, now: float | None = None) -> int:
@@ -137,11 +155,15 @@ class VoiceFlapTracker:
         count = self.kick_count(guild_id, now=now)
         if count < self.threshold:
             return 0.0
-        return backoff_for(count)
+        return backoff_for(count, threshold=self.threshold)
 
     def voice_cycles_total(self, guild_id: str) -> int:
-        """Total Discord-side disconnects recorded for a guild (metric)."""
+        """Total disconnects recorded for a guild (process-local counter)."""
         return self._cycles.get(guild_id, 0)
+
+    def cycles_snapshot(self) -> dict[str, int]:
+        """Copy of all per-guild totals (export hook for /health later)."""
+        return dict(self._cycles)
 
 
 _default_tracker = VoiceFlapTracker()
@@ -160,5 +182,10 @@ def record_voice_cycle(
 
 
 def voice_cycles_total(guild_id: str) -> int:
-    """Total Discord-side disconnects recorded for a guild (metric)."""
+    """Total disconnects recorded for a guild (process-local counter)."""
     return _default_tracker.voice_cycles_total(guild_id)
+
+
+def voice_cycles_snapshot() -> dict[str, int]:
+    """Copy of all per-guild totals (export hook for /health later)."""
+    return _default_tracker.cycles_snapshot()

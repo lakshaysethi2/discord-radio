@@ -16,6 +16,7 @@ from bot.voice_flap import (
     backoff_for,
     close_code_str,
     extract_close_code,
+    is_server_kick,
 )
 
 
@@ -58,6 +59,29 @@ class TestFlapTracker:
         assert backoff_for(4) == 4.0
         assert backoff_for(5) == 8.0
         assert backoff_for(100) == 60.0
+
+    def test_backoff_uses_custom_threshold(self) -> None:
+        assert backoff_for(2, threshold=2) == 2.0
+        assert backoff_for(3, threshold=2) == 4.0
+        trk = VoiceFlapTracker(threshold=5)
+        for _ in range(4):
+            d = trk.record_disconnect("g", close_code=4014, now=1000.0)
+        assert not d.is_flap
+        assert trk.backoff_for_guild("g", now=1000.0) == 0.0
+        d = trk.record_disconnect("g", close_code=4014, now=1000.0)
+        assert d.is_flap and d.backoff_seconds == 2.0
+
+    def test_clean_close_code_counts_metric_not_flap(self) -> None:
+        assert is_server_kick(4014) is True
+        assert is_server_kick(4022) is True
+        assert is_server_kick(None) is True  # code usually invisible; still counts
+        assert is_server_kick(1000) is False
+        trk = VoiceFlapTracker()
+        for _ in range(5):
+            d = trk.record_disconnect("g", close_code=1000, now=1000.0)
+        assert not d.is_flap  # known-clean drops never trip a full reset
+        assert trk.voice_cycles_total("g") == 5  # ...but the metric still bumps
+        assert trk.cycles_snapshot() == {"g": 5}
 
     def test_old_kicks_expire(self) -> None:
         trk = VoiceFlapTracker()
@@ -107,6 +131,7 @@ class TestHandleBotVoiceDisconnect:
         assert "close_code=4014" in caplog.text
         assert "cycle #1" in caplog.text
         assert station.voice_client is None
+        assert station.player.voice_client is None  # player kept in sync
         assert trk.voice_cycles_total("1") == 1
 
     def test_flap_logged_on_third_kick(self, caplog) -> None:  # type: ignore[no-untyped-def]
