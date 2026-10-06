@@ -31,6 +31,9 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
+from bot.voice_flap import VoiceFlapTracker
+from bot.voice_flap import default_tracker as _default_flap_tracker
+
 log = logging.getLogger(__name__)
 
 # Captain 2026-08-08: radio must never be silent >10s when someone is in
@@ -61,7 +64,13 @@ class HeartbeatHttpClient(Protocol):
     ) -> Any: ...
 
 
-def is_radio_healthy(stations: Mapping[str, object], *, now: float | None = None, silence_threshold: float = SILENCE_THRESHOLD_SECONDS) -> bool:
+def is_radio_healthy(
+    stations: Mapping[str, object],
+    *,
+    now: float | None = None,
+    silence_threshold: float = SILENCE_THRESHOLD_SECONDS,
+    flap_tracker: VoiceFlapTracker | None = None,
+) -> bool:
     """True when the radio is healthy for the current listening state.
 
     Rules (captain, 2026-08-08):
@@ -74,6 +83,10 @@ def is_radio_healthy(stations: Mapping[str, object], *, now: float | None = None
       ``silence_threshold`` (default 10s, 5s ideal). That catches a frozen
       FUSE (dead ``tvbot-rclone-mount``), stuck file-provider, or dropped
       voice/ffmpeg empty output.
+    * A station flapping (≥3 Discord kicks in 5 min, issue #27) is unhealthy
+      even while silence recovery keeps restarting audio — the recovery
+      *works*, so without this the leave/rejoin storm stays invisible to the
+      monitor. Window-based: clears itself once kicks age out.
 
     ``stations`` is the authoritative per-guild structure built in
     ``bot.main``: Station objects only for *enabled* guilds that joined
@@ -84,8 +97,17 @@ def is_radio_healthy(stations: Mapping[str, object], *, now: float | None = None
     any_listeners = any(getattr(st, "listener_count", 0) > 0 for st in stations.values())
     if not any_listeners:
         return True
-    # Someone is listening — every listening station must be healthy.
+    # Flap check first: a leave/rejoin storm self-heals audio each cycle, so
+    # the per-station checks below would all pass while Discord keeps kicking.
+    tracker = flap_tracker if flap_tracker is not None else _default_flap_tracker()
     cur = now if now is not None else time.monotonic()
+    for st in stations.values():
+        if getattr(st, "listener_count", 0) <= 0:
+            continue
+        gid = getattr(st, "guild_id", None)
+        if gid is not None and tracker.is_flapping(str(gid), now=cur):
+            return False
+    # Someone is listening — every listening station must be healthy.
     for st in stations.values():
         if getattr(st, "listener_count", 0) <= 0:
             continue
