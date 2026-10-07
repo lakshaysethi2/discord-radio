@@ -373,19 +373,13 @@ async def _reconnect_voice(
     # ``wait=True`` matters: without waiting for the voice_state_update of the
     # disconnect, the new connect can be handed a channel that is still
     # leaving, which is the bad state discord.py's own docstring warns about.
-    if station.voice_client is not None:
+    stale = station.voice_client or getattr(guild, "voice_client", None)
+    if stale is not None:
         with contextlib.suppress(Exception):
-            res = station.voice_client.disconnect(force=True, wait=True)  # type: ignore[union-attr]
+            res = stale.disconnect(force=True, wait=True)  # type: ignore[union-attr]
             if inspect.isawaitable(res):
                 await res
-        station.voice_client = None
-
-    guild_vc = getattr(guild, "voice_client", None)
-    if guild_vc is not None:
-        with contextlib.suppress(Exception):
-            res = guild_vc.disconnect(force=True, wait=True)
-            if inspect.isawaitable(res):
-                await res
+    station.voice_client = None
 
     channel = guild.get_channel(int(station.voice_channel_id))
     if channel is None:
