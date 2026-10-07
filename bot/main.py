@@ -48,6 +48,15 @@ from bot.voice_flap import (
     default_tracker,
     extract_close_code,
 )
+from bot.voice_reconnect import (
+    DISCORD_RECONNECT_GRACE_SECONDS,
+    GuildReconnectGuard,
+    is_voice_connected,
+    wait_for_discord_reconnect,
+)
+from bot.voice_reconnect import (
+    default_guard as default_reconnect_guard,
+)
 from db import guilds as guilds_db
 from db.database import Database
 from provider.client import FileProviderClient, ProviderError, TrackResponse
@@ -266,20 +275,80 @@ async def ensure_station_voice_connected(
     *,
     flap: VoiceFlapTracker | None = None,
     sleep: Callable[[float], Awaitable[None]] | None = None,
+    guard: GuildReconnectGuard | None = None,
 ) -> bool:
     """Ensure station.voice_client is connected to the guild's voice channel.
 
-    If disconnected, cleanly tears down any zombie voice client, reconnects to
-    the channel, and updates both station.voice_client and station.player.
+    If disconnected, cleans up any zombie voice client, reconnects to the
+    channel, and updates both station.voice_client and station.player.
 
-    When the flap detector shows >=3 Discord kicks in 5 min (ghost session,
-    issue #27) this does a *full reset* instead: force-disconnect, exponential
-    backoff, then a fresh ``channel.connect(reconnect=False)`` that skips
-    discord.py's resume path — the equivalent of the manual container restart
-    that cleared the 2026-10-06 storm.
+    Only ONE reconnect runs per guild at a time (``GuildReconnectGuard``). Both
+    the 5s watchdog and ``on_voice_state_update`` call this function; without
+    the guard they started competing handshakes, and each one's
+    ``disconnect(force=True)`` killed the other's connection — the ~30s
+    join/leave storm of 2026-10-07. Concurrent callers now await the same
+    in-flight reconnect instead of starting a second one.
+
+    discord.py's own ``VoiceConnectionState._potential_reconnect`` may already
+    be reconnecting; we give it a short grace period first and only take over
+    when it has given up, so the two paths never fight.
+
+    When the flap detector shows >=3 Discord kicks in 5 min (issue #27) this
+    does a *full reset* instead: exponential backoff, then a fresh
+    ``channel.connect(reconnect=False)`` that skips discord.py's resume path.
     """
-    vc = station.voice_client
-    if vc is not None and getattr(vc, "is_connected", lambda: False)():
+    if is_voice_connected(station.voice_client):
+        return True
+
+    grd = guard if guard is not None else default_reconnect_guard()
+
+    async def _do_reconnect() -> bool:
+        return await _reconnect_voice(
+            client,
+            station,
+            flap=flap,
+            sleep=sleep,
+            guard=grd,
+        )
+
+    return await grd.run(station.guild_id, _do_reconnect)
+
+
+async def _reconnect_voice(
+    client: object,
+    station: Station,
+    *,
+    flap: VoiceFlapTracker | None,
+    sleep: Callable[[float], Awaitable[None]] | None,
+    guard: GuildReconnectGuard,
+) -> bool:
+    """Single-owner reconnect body; only called by the per-guild guard."""
+    if is_voice_connected(station.voice_client):
+        return True
+
+    guild = None
+    with contextlib.suppress(Exception):
+        guild = client.get_guild(int(station.guild_id))  # type: ignore[attr-defined]
+    if guild is None:
+        log.warning("guild %s not found for voice reconnect", station.guild_id)
+        return False
+
+    # discord.py may be mid-reconnect right now. Let it finish before we
+    # interfere — force-disconnecting its in-flight attempt is what produced
+    # the storm (its abandoned flow later closed our new socket).
+    live = await wait_for_discord_reconnect(
+        lambda: getattr(guild, "voice_client", None) or station.voice_client,
+        grace_seconds=DISCORD_RECONNECT_GRACE_SECONDS,
+        sleep=sleep,
+    )
+    if live:
+        vc = getattr(guild, "voice_client", None) or station.voice_client
+        station.voice_client = vc
+        station.player.voice_client = vc
+        log.info(
+            "guild %s: discord.py reconnect completed on its own — adopting client",
+            station.guild_id,
+        )
         return True
 
     tracker = flap if flap is not None else default_tracker()
@@ -300,27 +369,17 @@ async def ensure_station_voice_connected(
             station.voice_channel_id,
         )
 
-    guild = None
-    with contextlib.suppress(Exception):
-        guild = client.get_guild(int(station.guild_id))  # type: ignore[attr-defined]
-    if guild is None:
-        log.warning("guild %s not found for voice reconnect", station.guild_id)
-        return False
-
-    # Clean up stale connection
-    if station.voice_client is not None:
+    # Tear down only a genuinely stale client (discord.py gave up on it).
+    # ``wait=True`` matters: without waiting for the voice_state_update of the
+    # disconnect, the new connect can be handed a channel that is still
+    # leaving, which is the bad state discord.py's own docstring warns about.
+    stale = station.voice_client or getattr(guild, "voice_client", None)
+    if stale is not None:
         with contextlib.suppress(Exception):
-            res = station.voice_client.disconnect(force=True)  # type: ignore[union-attr]
+            res = stale.disconnect(force=True, wait=True)  # type: ignore[union-attr]
             if inspect.isawaitable(res):
                 await res
-        station.voice_client = None
-
-    guild_vc = getattr(guild, "voice_client", None)
-    if guild_vc is not None:
-        with contextlib.suppress(Exception):
-            res = guild_vc.disconnect(force=True)
-            if inspect.isawaitable(res):
-                await res
+    station.voice_client = None
 
     channel = guild.get_channel(int(station.voice_channel_id))
     if channel is None:
@@ -333,8 +392,8 @@ async def ensure_station_voice_connected(
 
     try:
         if flapping:
-            # Full reset: back off, then a fresh handshake (no resume) —
-            # discord.py's `_potential_reconnect` never recovers a ghost.
+            # Full reset: back off, then a fresh handshake (no resume) to
+            # bypass any stuck discord.py resume path.
             await (sleep or asyncio.sleep)(backoff)
             new_vc = await channel.connect(reconnect=False, timeout=30.0)
             log.warning(
@@ -1485,13 +1544,13 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
         async def _silence_recovery_loop() -> None:
             while True:
                 await asyncio.sleep(5.0)
-                # Auto-heal any dropped station voice clients
+                # Auto-heal any dropped station voice clients. The guard
+                # ensures this does not race the voice_state_update handler.
                 for st in list(stations.values()):
-                    if st.voice_client is None or not getattr(
-                        st.voice_client, "is_connected", lambda: False
-                    )():
-                        with contextlib.suppress(Exception):
-                            await ensure_station_voice_connected(client, st)
+                    if is_voice_connected(st.voice_client):
+                        continue
+                    with contextlib.suppress(Exception):
+                        await ensure_station_voice_connected(client, st)
 
                 async with _advance_lock:
                     with contextlib.suppress(Exception):
