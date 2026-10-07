@@ -54,13 +54,16 @@ def is_discord_reconnecting(voice_client: object | None) -> bool:
     the underlying ``VoiceConnectionState`` as ``_connection`` (2.x). While its
     ``_runner`` task is alive the library owns the connection, so we must not
     force-disconnect it — doing so is what caused the 2026-10-07 storm.
+
+    Verified against discord.py 2.7.1: ``VoiceClient._connection`` is the
+    state, and the live task attribute on that state is ``_runner``.
     """
     if voice_client is None:
         return False
     state = getattr(voice_client, "_connection", None)
     if state is None:
         return False
-    runner = getattr(state, "runner", None)
+    runner = getattr(state, "_runner", None) or getattr(state, "runner", None)
     if runner is None:
         return False
     with contextlib.suppress(Exception):

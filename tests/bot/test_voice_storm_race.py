@@ -27,7 +27,7 @@ class FakeRunner:
 
 class FakeConnection:
     def __init__(self, done: bool) -> None:
-        self.runner = FakeRunner(done)
+        self._runner = FakeRunner(done)
 
 
 class FakeVoiceClient:

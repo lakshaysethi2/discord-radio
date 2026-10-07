@@ -34,7 +34,7 @@ class FakeRunner:
 
 class FakeConnection:
     def __init__(self, runner: FakeRunner | None = None) -> None:
-        self.runner = runner
+        self._runner = runner
 
 
 class FakeVoiceClient:
@@ -66,6 +66,19 @@ class TestHelpers:
     def test_is_discord_reconnecting_false_when_runner_done(self) -> None:
         vc = attach_connection(FakeVoiceClient(connected=False, reconnecting=False))
         assert is_discord_reconnecting(vc) is False
+
+    def test_is_discord_reconnecting_uses_real_discord_attr(self) -> None:
+        """Pin the discord.py 2.x attribute names we depend on.
+
+        A previous version read ``state.runner``; discord.py actually stores
+        the live task as ``_runner``, so the check silently never fired.
+        """
+        import discord
+
+        assert hasattr(discord.VoiceClient, "create_connection_state")
+        vc = attach_connection(FakeVoiceClient(connected=False, reconnecting=True))
+        assert hasattr(vc._connection, "_runner")  # type: ignore[attr-defined]
+        assert is_discord_reconnecting(vc) is True
 
     def test_is_discord_reconnecting_none_client(self) -> None:
         assert is_discord_reconnecting(None) is False
