@@ -54,9 +54,7 @@ class Config:
     # ---- gdrive via WebDAV (rclone serve webdav) ----
     # e.g. GDRIVE_WEBDAV_URL=http://rclone-webdav:8081, GDRIVE_WEBDAV_PATH=/
     # Optional basic auth: GDRIVE_WEBDAV_USER / GDRIVE_WEBDAV_PASS.
-    gdrive_webdav_url: str = field(
-        default_factory=lambda: os.environ.get("GDRIVE_WEBDAV_URL", "")
-    )
+    gdrive_webdav_url: str = field(default_factory=lambda: os.environ.get("GDRIVE_WEBDAV_URL", ""))
     gdrive_webdav_path: str = field(
         default_factory=lambda: os.environ.get("GDRIVE_WEBDAV_PATH", "/")
     )

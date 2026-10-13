@@ -24,10 +24,18 @@ def _row(provider: str, source_ref: str, title: str, sort_order: float) -> dict:
 
 
 ARCHIVE_ROWS = [
-    _row("archive", "item::BTO Radio Interviews/#03 - 04_25_02 - #9B58.mp3",
-         "BTO Radio Interviews — #03 - 04_25_02 - #9B58", 0),
-    _row("archive", "item::BTO Radio Interviews/#01 - 11_08_01 - #4193.mp3",
-         "BTO Radio Interviews — #01 - 11_08_01 - #4193", 1),
+    _row(
+        "archive",
+        "item::BTO Radio Interviews/#03 - 04_25_02 - #9B58.mp3",
+        "BTO Radio Interviews — #03 - 04_25_02 - #9B58",
+        0,
+    ),
+    _row(
+        "archive",
+        "item::BTO Radio Interviews/#01 - 11_08_01 - #4193.mp3",
+        "BTO Radio Interviews — #01 - 11_08_01 - #4193",
+        1,
+    ),
     _row("archive", "item::Extras/only-on-archive.mp3", "only on archive", 2),
 ]
 
@@ -61,8 +69,13 @@ class TestDateKey:
     def test_embedded_months_get_no_key(self) -> None:
         # Audiobook/compilation titles must NOT claim a lecture's month slot.
         assert _date_key("Satsangs/satsang-qa-jan-mar-jul-2011") is None
-        assert _date_key("TheWaytoGod:RadicalSubjectivity:The'I'ofSelf-February2002[B006W1639I]") is None
-        assert _date_key("HomoSpiritusDevotionalNondualitySeries(SpiritualCommunity-June2003)") is None
+        assert (
+            _date_key("TheWaytoGod:RadicalSubjectivity:The'I'ofSelf-February2002[B006W1639I]")
+            is None
+        )
+        assert (
+            _date_key("HomoSpiritusDevotionalNondualitySeries(SpiritualCommunity-June2003)") is None
+        )
 
     def test_none_when_no_date(self) -> None:
         assert _date_key("volume-i-power-vs-force") is None
@@ -115,9 +128,7 @@ class TestMigrateProvider:
         assert migrated.migrate_provider(primary="telegram", fallback="archive") == 0
 
     def test_refresh_prunes_inactive_provider_rows(self, db, cache, fake_provider) -> None:
-        db.upsert_tracks(
-            [_row("telegram", "chan/1.mp3", "stale telegram track", 0)]
-        )
+        db.upsert_tracks([_row("telegram", "chan/1.mp3", "stale telegram track", 0)])
         s = Service(db, cache, [fake_provider])
         assert db.playlist_length() == 1
         s.refresh_playlist()

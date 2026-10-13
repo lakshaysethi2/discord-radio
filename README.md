@@ -99,6 +99,16 @@ Backend setup guides:
 
 ---
 
+## Branches and releases
+
+`prod` is the **only stable/default branch**. All pending fixes and features
+share **at most one working branch**; no parallel `main` or long-lived feature
+branches. Open one PR into `prod`, pass the Docker test/lint gates, and squash
+merge after review. Historical work is retained in archive tags.
+
+See [branch policy and archived work](docs/git-branches.md) and the
+[October 2026 review](docs/review-2026-10-14.md).
+
 ## Local development
 
 Same commands as production — everything runs in containers.

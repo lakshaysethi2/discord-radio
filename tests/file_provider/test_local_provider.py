@@ -53,9 +53,7 @@ def test_missing_root_yields_empty(tmp_path: Path) -> None:
     assert p.list_tracks() == []
 
 
-@pytest.mark.skipif(
-    __import__("os").geteuid() == 0, reason="root bypasses directory permissions"
-)
+@pytest.mark.skipif(__import__("os").geteuid() == 0, reason="root bypasses directory permissions")
 def test_scan_tolerates_unreadable_dir(media_root: Path) -> None:
     """One unreadable directory must not abort the whole scan."""
     bad = media_root / "bad"

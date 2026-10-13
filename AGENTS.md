@@ -1,5 +1,6 @@
-# important 
-dont use .venv on host , always run inside docker !
+# Development environment
+
+Always build, lint, and test inside Docker. Do not create or use a host `.venv`.
 
 # Project agent memory
 
@@ -15,7 +16,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Testing
 
-- `.venv/bin/python -m pytest -q` (full suite) and `.venv/bin/ruff check .` must stay green.
+- `make test` (full suite) and `make lint` (Ruff check + format check) must stay green. Both run inside Docker.
 - `tests/bot/` uses fake stations/players/voice clients + monkeypatched `time.monotonic` for `RadioClock` maths (see `tests/bot/test_forward.py`, `tests/bot/test_rewind.py`, `tests/bot/test_radio_clock.py`).
 
 ## Hawkins Radio SLA — Devotional Non Duality (DND) — HARD RULE (2026-08-08)
@@ -25,6 +26,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - **Live wiring:** `bot/main.py` `health_check=lambda: is_radio_healthy(stations)` via `GatusHeartbeat.run()`; `bot/config.py` default `gatus_push_interval_seconds=5`; `sync_radio_state()` resumes from frozen `radio.position()` when listeners appear. Verify with: `docker compose up -d --build bot` → `docker logs tvbot-bot` (tick silence_seconds) + `curl https://gatus.lak.nz/api/v1/endpoints/statuses` (radio group success false when silent with listener).
 - **Do not regress:** never raise threshold above 10s, never slow tick above 5s, never return healthy when `listener_count>0` and silent — that is the false-positive that hid outages. Commit `9e3ecdb` on `prod`.
 - **Playback sources:** live `.env` must keep `FILE_PROVIDER_ORDER=webdav,archive` (Drive primary, archive.org leftover rows). Unknown/unloaded providers are skipped and marked unhealthy so the cursor cannot 502-loop 500 archive rows. Occupied-channel silence recovery in `bot/main.py` (`recover_silent_playback`, 5s loop) retries `provider.current()` after `/next` exhausts. rclone sidecar (`rclone-serve` / alias `rclone-webdav`) is watched by compose `rclone-guard` + `scripts/rclone-webdav-watchdog.sh`.
+
+## Branches and reconnect recovery
+
+- `prod` is the only stable/default branch. Keep at most one active fixes/features branch; see `docs/git-branches.md`. Archive superseded tips with tags, not extra branches.
+- Voice reconnect ownership lives in `bot/voice_reconnect.py`. Join the old discord.py `_runner` and `_connector` before replacing a client. Public `VoiceClient.disconnect()` accepts `force`, **not** `wait`; it waits internally. Keep the real-library contract tests green when upgrading discord.py.
+- `recover_silent_playback()` preserves the shared cursor within a track; an EOF advance resets both the shared clock and persisted position. Silence gates are per guild, so a healthy guild cannot hide a silent one. Call under `_advance_lock`.
 
 ## Maintaining this file
 

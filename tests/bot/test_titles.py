@@ -13,9 +13,7 @@ def test_prettifies_drive_stem() -> None:
 
 
 def test_prettifies_path() -> None:
-    assert display_title("VolumeSeries/volume-i-power-vs-force.mp4") == (
-        "Volume I Power vs Force"
-    )
+    assert display_title("VolumeSeries/volume-i-power-vs-force.mp4") == ("Volume I Power vs Force")
 
 
 def test_empty_and_none() -> None:

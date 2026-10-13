@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from unittest.mock import AsyncMock
 
 from bot.main import (
     RadioClock,
@@ -149,7 +150,7 @@ class TestRecoverSilentPlayback:
         station = self._station(player)
         radio = RadioClock()
         radio.start(8700.0)
-        prov = ScriptedProvider([make_track(title="Recovered")])
+        prov = ScriptedProvider([make_track(title="Recovered", duration_seconds=20000)])
         # First silent sample only arms the 5s gate — no restart yet.
         assert (
             await recover_silent_playback(
@@ -182,7 +183,7 @@ class TestRecoverSilentPlayback:
         station = self._station(player)
         radio = RadioClock()
         radio.start(10.0)
-        prov = ScriptedProvider([make_track(title="Recovered")])
+        prov = ScriptedProvider([make_track(title="Recovered", duration_seconds=20000)])
         assert (
             await recover_silent_playback(
                 {"g": station},  # type: ignore[arg-type]
@@ -207,7 +208,7 @@ class TestRecoverSilentPlayback:
             )
             is False
         )
-        assert getattr(radio, "_silence_recovery_since", None) is None
+        assert getattr(station, "_silence_recovery_since", None) is None
 
     async def test_noop_when_voice_client_disconnected(self, state: BotState) -> None:
         player = FakePlayer(playing=False)
@@ -218,7 +219,7 @@ class TestRecoverSilentPlayback:
             {"listener_count": 1, "player": player, "guild_id": "g", "voice_client": vc},
         )()
         radio = RadioClock()
-        prov = ScriptedProvider([make_track(title="Recovered")])
+        prov = ScriptedProvider([make_track(title="Recovered", duration_seconds=20000)])
         ok = await recover_silent_playback(
             {"g": station},  # type: ignore[arg-type]
             prov,
@@ -302,7 +303,7 @@ class TestEnsureStationVoiceConnected:
             (),
             {
                 "is_connected": lambda self: False,
-                "disconnect": lambda self, force=True: None,
+                "disconnect": AsyncMock(),
             },
         )()
 
@@ -345,7 +346,7 @@ class TestEnsureStationVoiceConnected:
                 "guild_id": "1",
                 "voice_channel_id": 10,
                 "voice_channel": None,
-                "player": None,
+                "player": type("P", (), {"voice_client": None})(),
             },
         )()
 

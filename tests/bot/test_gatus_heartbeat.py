@@ -40,7 +40,9 @@ class FakeStation:
 
 
 def make_stations(*connected: bool) -> dict[str, FakeStation]:
-    return {f"g{i}": FakeStation(FakeVoiceClient(c), listener_count=1) for i, c in enumerate(connected)}
+    return {
+        f"g{i}": FakeStation(FakeVoiceClient(c), listener_count=1) for i, c in enumerate(connected)
+    }
 
 
 class RecordingClient:

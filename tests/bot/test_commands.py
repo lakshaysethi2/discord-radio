@@ -18,6 +18,7 @@ from provider.client import TrackResponse
 # Fake / stub helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_track(**kw) -> TrackResponse:
     defaults = {
         "track_id": "abc123",
@@ -78,6 +79,7 @@ def _fake_interaction(
 # _fmt_duration
 # ---------------------------------------------------------------------------
 
+
 class TestFmtDuration:
     def test_zero(self) -> None:
         assert _fmt_duration(0) == "—"
@@ -98,6 +100,7 @@ class TestFmtDuration:
 # ---------------------------------------------------------------------------
 # _watcher_count
 # ---------------------------------------------------------------------------
+
 
 class TestWatcherCount:
     def test_no_sessions(self, db: Database) -> None:
@@ -132,6 +135,7 @@ class TestWatcherCount:
 # build_commands
 # ---------------------------------------------------------------------------
 
+
 class TestBuildCommands:
     def test_returns_six_commands(self, db: Database, state: BotState) -> None:
         cmds = build_commands(
@@ -154,6 +158,7 @@ class TestBuildCommands:
 # ---------------------------------------------------------------------------
 # /current
 # ---------------------------------------------------------------------------
+
 
 class TestCurrentCommand:
     @pytest.fixture
@@ -408,6 +413,7 @@ class TestPreviousCommand:
 # /forward
 # ---------------------------------------------------------------------------
 
+
 class TestForwardCommand:
     def _get_forward(self, cmds):
         for _, _, cb in cmds:
@@ -510,6 +516,7 @@ class TestForwardCommand:
 # /rewind
 # ---------------------------------------------------------------------------
 
+
 class TestRewindCommand:
     def _get_rewind(self, cmds):
         for _, _, cb in cmds:
@@ -611,6 +618,7 @@ class TestRewindCommand:
 # ---------------------------------------------------------------------------
 # /leaderboard
 # ---------------------------------------------------------------------------
+
 
 class TestLeaderboardCommand:
     def _get_leaderboard(self, cmds):

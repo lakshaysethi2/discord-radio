@@ -340,4 +340,3 @@ class TestPlayerVoiceClientSafety:
             await ctx.player.start(make_track())
 
         assert cleaned_up is True
-
