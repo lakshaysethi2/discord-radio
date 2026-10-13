@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import inspect
 import logging
 import math
 import signal
@@ -47,6 +46,16 @@ from bot.voice_flap import (
     close_code_str,
     default_tracker,
     extract_close_code,
+)
+from bot.voice_reconnect import (
+    DISCORD_RECONNECT_GRACE_SECONDS,
+    GuildReconnectGuard,
+    disconnect_stale_voice_client,
+    is_voice_connected,
+    wait_for_discord_reconnect,
+)
+from bot.voice_reconnect import (
+    default_guard as default_reconnect_guard,
 )
 from db import guilds as guilds_db
 from db.database import Database
@@ -266,20 +275,78 @@ async def ensure_station_voice_connected(
     *,
     flap: VoiceFlapTracker | None = None,
     sleep: Callable[[float], Awaitable[None]] | None = None,
+    guard: GuildReconnectGuard | None = None,
 ) -> bool:
     """Ensure station.voice_client is connected to the guild's voice channel.
 
-    If disconnected, cleanly tears down any zombie voice client, reconnects to
-    the channel, and updates both station.voice_client and station.player.
+    If disconnected, cleans up any zombie voice client, reconnects to the
+    channel, and updates both station.voice_client and station.player.
 
-    When the flap detector shows >=3 Discord kicks in 5 min (ghost session,
-    issue #27) this does a *full reset* instead: force-disconnect, exponential
-    backoff, then a fresh ``channel.connect(reconnect=False)`` that skips
-    discord.py's resume path — the equivalent of the manual container restart
-    that cleared the 2026-10-06 storm.
+    Only ONE reconnect runs per guild at a time (``GuildReconnectGuard``). Both
+    the 5s watchdog and ``on_voice_state_update`` call this function; without
+    the guard they started competing handshakes, and each one's
+    ``disconnect(force=True)`` killed the other's connection — the ~30s
+    join/leave storm of 2026-10-07. Concurrent callers now await the same
+    in-flight reconnect instead of starting a second one.
+
+    discord.py's own ``VoiceConnectionState._potential_reconnect`` may already
+    be reconnecting; we give it a short grace period first and only take over
+    after joining its old tasks, so the two paths never fight.
+
+    When the flap detector shows >=3 Discord kicks in 5 min (issue #27) this
+    does a *full reset* instead: exponential backoff, then a fresh
+    ``channel.connect(reconnect=False)`` that skips discord.py's resume path.
     """
-    vc = station.voice_client
-    if vc is not None and getattr(vc, "is_connected", lambda: False)():
+    if is_voice_connected(station.voice_client):
+        return True
+
+    grd = guard if guard is not None else default_reconnect_guard()
+
+    async def _do_reconnect() -> bool:
+        return await _reconnect_voice(
+            client,
+            station,
+            flap=flap,
+            sleep=sleep,
+        )
+
+    return await grd.run(station.guild_id, _do_reconnect)
+
+
+async def _reconnect_voice(
+    client: object,
+    station: Station,
+    *,
+    flap: VoiceFlapTracker | None,
+    sleep: Callable[[float], Awaitable[None]] | None,
+) -> bool:
+    """Single-owner reconnect body; only called by the per-guild guard."""
+    if is_voice_connected(station.voice_client):
+        return True
+
+    guild = None
+    with contextlib.suppress(Exception):
+        guild = client.get_guild(int(station.guild_id))  # type: ignore[attr-defined]
+    if guild is None:
+        log.warning("guild %s not found for voice reconnect", station.guild_id)
+        return False
+
+    # discord.py may be mid-reconnect right now. Let it finish before we
+    # interfere — force-disconnecting its in-flight attempt is what produced
+    # the storm (its abandoned flow later closed our new socket).
+    live = await wait_for_discord_reconnect(
+        lambda: getattr(guild, "voice_client", None) or station.voice_client,
+        grace_seconds=DISCORD_RECONNECT_GRACE_SECONDS,
+        sleep=sleep,
+    )
+    if live:
+        vc = getattr(guild, "voice_client", None) or station.voice_client
+        station.voice_client = vc
+        station.player.voice_client = vc
+        log.info(
+            "guild %s: discord.py reconnect completed on its own — adopting client",
+            station.guild_id,
+        )
         return True
 
     tracker = flap if flap is not None else default_tracker()
@@ -300,27 +367,17 @@ async def ensure_station_voice_connected(
             station.voice_channel_id,
         )
 
-    guild = None
-    with contextlib.suppress(Exception):
-        guild = client.get_guild(int(station.guild_id))  # type: ignore[attr-defined]
-    if guild is None:
-        log.warning("guild %s not found for voice reconnect", station.guild_id)
-        return False
-
-    # Clean up stale connection
-    if station.voice_client is not None:
-        with contextlib.suppress(Exception):
-            res = station.voice_client.disconnect(force=True)  # type: ignore[union-attr]
-            if inspect.isawaitable(res):
-                await res
-        station.voice_client = None
-
-    guild_vc = getattr(guild, "voice_client", None)
-    if guild_vc is not None:
-        with contextlib.suppress(Exception):
-            res = guild_vc.disconnect(force=True)
-            if inspect.isawaitable(res):
-                await res
+    # The guild owns the authoritative client; the station can lag an event.
+    stale = getattr(guild, "voice_client", None) or station.voice_client
+    if stale is not None:
+        try:
+            await disconnect_stale_voice_client(stale)
+        except Exception:
+            # Never connect over an incomplete teardown. Retry next tick.
+            log.exception("guild %s: stale voice teardown failed", station.guild_id)
+            return False
+    station.voice_client = None
+    station.player.voice_client = None
 
     channel = guild.get_channel(int(station.voice_channel_id))
     if channel is None:
@@ -333,8 +390,8 @@ async def ensure_station_voice_connected(
 
     try:
         if flapping:
-            # Full reset: back off, then a fresh handshake (no resume) —
-            # discord.py's `_potential_reconnect` never recovers a ghost.
+            # Full reset: back off, then a fresh handshake (no resume) to
+            # bypass any stuck discord.py resume path.
             await (sleep or asyncio.sleep)(backoff)
             new_vc = await channel.connect(reconnect=False, timeout=30.0)
             log.warning(
@@ -374,47 +431,31 @@ async def recover_silent_playback(
     silence_gate_seconds: float = SILENCE_RECOVERY_GATE_SECONDS,
     now: float | None = None,
 ) -> bool:
-    """Resume (not restart) audio when listeners are present but silent.
+    """Heal silent occupied stations without rewinding the shared radio.
 
-    ``_advance_and_announce`` used to give up after 10 failed ``/next`` calls
-    and stay silent until a join/leave. Occupied-channel silence is an SLA
-    failure, so this retries ``provider.current()`` and resumes every
-    occupied station. Returns True if playback was resumed.
-
-    Port of orc 40df6b9: the shared cursor is preserved — stations resume at
-    ``radio.position()`` instead of replaying from 0 (the old ``reset(0)``
-    replayed the same slice on every storm reconnect) — and recovery only
-    fires after ``silence_gate_seconds`` of continuous silence.
+    Called under the shared advance lock. Silence is timed per station,
+    including disconnected stations: one healthy guild must not mask another
+    guild's outage. If the shared cursor is past EOF, advance once and reset
+    the shared clock as well as the persisted cursor before starting audio.
     """
-    if admin_paused:
-        return False
-    occupied = [
-        s
-        for s in stations.values()
-        if s.listener_count > 0
-        and s.voice_client is not None
-        and getattr(s.voice_client, "is_connected", lambda: False)()
-    ]
+    cur = now if now is not None else time.monotonic()
+    occupied = []
+    for station in stations.values():
+        connected = is_voice_connected(station.voice_client)
+        if admin_paused or station.listener_count <= 0 or (
+            connected and station.player.is_playing()
+        ):
+            station._silence_recovery_since = None
+            continue
+        since = getattr(station, "_silence_recovery_since", None)
+        if since is None:
+            since = cur
+            station._silence_recovery_since = since
+        if connected and cur - since >= silence_gate_seconds:
+            occupied.append(station)
     if not occupied:
         return False
-    if any(s.player.is_playing() for s in occupied):
-        # Audio back on its own — drop the gate so the next silence starts fresh.
-        with contextlib.suppress(Exception):
-            if hasattr(radio, "_silence_recovery_since"):
-                delattr(radio, "_silence_recovery_since")
-        return False
-    cur = now if now is not None else time.monotonic()
-    if silence_gate_seconds > 0:
-        since = getattr(radio, "_silence_recovery_since", None)
-        if since is None:
-            # First silent sample — arm the gate, don't restart yet.
-            radio._silence_recovery_since = cur  # type: ignore[attr-defined]
-            return False
-        silent_for = cur - float(since)
-        if silent_for < silence_gate_seconds:
-            return False
-    else:
-        silent_for = 0.0
+
     try:
         nxt = await provider.current()
     except Exception as exc:
@@ -423,30 +464,51 @@ async def recover_silent_playback(
     if not nxt.ready or not nxt.local_path:
         log.warning("silence recovery: track %s not ready", nxt.track_id)
         return False
+
+    seek = radio.position()
+    track_changed = bool(state.current_track_id and state.current_track_id != nxt.track_id)
+    if track_changed:
+        seek = 0.0
+    elif nxt.duration_seconds > 0 and seek >= nxt.duration_seconds:
+        try:
+            nxt = await provider.next()
+        except Exception as exc:
+            log.warning("silence recovery: provider.next failed: %s", exc)
+            return False
+        if not nxt.ready or not nxt.local_path:
+            return False
+        track_changed = True  # includes a one-track playlist wrapping to itself
+        seek = 0.0
+
     if nxt.has_video and nxt.unknown_duration:
         log.warning(
             "silence recovery: track %s is video with unknown duration — end-of-track advance may stall",
             nxt.track_id,
         )
-    # Preserve the shared cursor: resume where the radio is, never reset to 0.
-    seek = radio.position()
+    if track_changed:
+        radio.reset(seek)
+        # A global track change must reach healthy stations too.
+        occupied = [
+            s for s in stations.values()
+            if s.listener_count > 0 and is_voice_connected(s.voice_client)
+        ]
+    state.current_track_id = nxt.track_id
+    state.playlist_position = nxt.playlist_position
     state.playback_position_seconds = int(seek)
     sync_radio_state(stations, radio, state, admin_paused=admin_paused)
+    resumed = False
     for st in occupied:
         try:
             await st.player.start(nxt, seek_seconds=seek)
         except Exception as exc:
             log.warning("silence recovery: station %s start failed: %s", st.guild_id, exc)
-    with contextlib.suppress(Exception):
-        if hasattr(radio, "_silence_recovery_since"):
-            delattr(radio, "_silence_recovery_since")
-    log.warning(
-        "silence recovery: resumed %s at %ds (silent for %.1fs)",
-        nxt.track_id,
-        int(seek),
-        silent_for,
-    )
-    return True
+        else:
+            st.is_paused = False
+            st._silence_recovery_since = None
+            resumed = True
+    if resumed:
+        log.warning("silence recovery: resumed %s at %ds", nxt.track_id, int(seek))
+    return resumed
 
 
 @dataclass
@@ -1485,13 +1547,13 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
         async def _silence_recovery_loop() -> None:
             while True:
                 await asyncio.sleep(5.0)
-                # Auto-heal any dropped station voice clients
+                # Auto-heal any dropped station voice clients. The guard
+                # ensures this does not race the voice_state_update handler.
                 for st in list(stations.values()):
-                    if st.voice_client is None or not getattr(
-                        st.voice_client, "is_connected", lambda: False
-                    )():
-                        with contextlib.suppress(Exception):
-                            await ensure_station_voice_connected(client, st)
+                    if is_voice_connected(st.voice_client):
+                        continue
+                    with contextlib.suppress(Exception):
+                        await ensure_station_voice_connected(client, st)
 
                 async with _advance_lock:
                     with contextlib.suppress(Exception):
