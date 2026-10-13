@@ -165,7 +165,10 @@ class GatusHeartbeat:
         # (30s was too slow — 60s window was way too much).
         self.interval_seconds = interval_seconds if interval_seconds > 0 else 1
         if self.interval_seconds > 10:
-            log.warning("gatus heartbeat interval %s >10s clamped to 5s for 10s silence SLA", self.interval_seconds)
+            log.warning(
+                "gatus heartbeat interval %s >10s clamped to 5s for 10s silence SLA",
+                self.interval_seconds,
+            )
             self.interval_seconds = 5
         self._headers = {"Authorization": f"Bearer {push_token}"}
         self._previous_healthy: bool | None = None

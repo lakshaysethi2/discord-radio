@@ -60,7 +60,9 @@ class FakeStation:
 class FakeProvider:
     """Scripted provider: get_by_id from a map, next() from a queue."""
 
-    def __init__(self, tracks: dict[str, TrackResponse] | None = None, next_seq: list | None = None):
+    def __init__(
+        self, tracks: dict[str, TrackResponse] | None = None, next_seq: list | None = None
+    ):
         self.tracks = tracks or {}
         self.next_seq = list(next_seq or [])
         self.get_calls: list[str] = []
@@ -117,9 +119,7 @@ def _stations(*counts: int) -> dict[str, FakeStation]:
 
 
 class TestRewindRejections:
-    async def test_rejects_zero_minutes(
-        self, state: BotState, monotonic, monkeypatch
-    ) -> None:
+    async def test_rejects_zero_minutes(self, state: BotState, monotonic, monkeypatch) -> None:
         monkeypatch.setattr(asyncio, "sleep", _no_sleep)
         radio = _radio(playing=True, offset=100.0)
         provider = FakeProvider(tracks={"t1": make_track()})
@@ -139,9 +139,7 @@ class TestRewindRejections:
         assert provider.get_calls == []
         assert radio.position() == 100.0
 
-    async def test_rejects_negative_minutes(
-        self, state: BotState, monotonic, monkeypatch
-    ) -> None:
+    async def test_rejects_negative_minutes(self, state: BotState, monotonic, monkeypatch) -> None:
         monkeypatch.setattr(asyncio, "sleep", _no_sleep)
         radio = _radio(playing=True, offset=100.0)
         provider = FakeProvider(tracks={"t1": make_track()})
@@ -258,9 +256,7 @@ class TestRewindRejections:
         assert "Could not reach the file provider" in result.message
         assert radio.position() == 100.0
 
-    async def test_unready_track_is_friendly(
-        self, state: BotState, monotonic, monkeypatch
-    ) -> None:
+    async def test_unready_track_is_friendly(self, state: BotState, monotonic, monkeypatch) -> None:
         monkeypatch.setattr(asyncio, "sleep", _no_sleep)
         radio = _radio(playing=True, offset=100.0)
         provider = FakeProvider(tracks={"t1": make_track(ready=False, local_path="")})
@@ -360,9 +356,7 @@ class TestRewindInTrack:
         assert stations["g0"].player.starts == [(track, 180.0)]
         assert stations["g1"].player.starts == []
 
-    async def test_lands_exactly_at_zero(
-        self, state: BotState, monotonic, monkeypatch
-    ) -> None:
+    async def test_lands_exactly_at_zero(self, state: BotState, monotonic, monkeypatch) -> None:
         monkeypatch.setattr(asyncio, "sleep", _no_sleep)
         radio = _radio(playing=True, offset=120.0)
         track = make_track(duration_seconds=600)
@@ -436,9 +430,7 @@ class TestRewindClampAtStart:
         monkeypatch.setattr(asyncio, "sleep", _no_sleep)
         radio = _radio(playing=True, offset=100.0)
         t1 = make_track(duration_seconds=300)
-        t2 = make_track(
-            track_id="t2", title="T2", duration_seconds=300, playlist_position=1
-        )
+        t2 = make_track(track_id="t2", title="T2", duration_seconds=300, playlist_position=1)
         provider = FakeProvider(tracks={"t1": t1}, next_seq=[t2])
         state.current_track_id = "t1"
         stations = _stations(1)

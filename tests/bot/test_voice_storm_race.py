@@ -168,13 +168,9 @@ class TestStormRace:
 
         channel.connect = slow_connect  # type: ignore[method-assign]
 
-        first = asyncio.create_task(
-            ensure_station_voice_connected(client, station, guard=guard)
-        )
+        first = asyncio.create_task(ensure_station_voice_connected(client, station, guard=guard))
         await started.wait()
-        second = asyncio.create_task(
-            ensure_station_voice_connected(client, station, guard=guard)
-        )
+        second = asyncio.create_task(ensure_station_voice_connected(client, station, guard=guard))
         results = await asyncio.gather(first, second)
 
         assert results == [True, True]

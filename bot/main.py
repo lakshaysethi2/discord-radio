@@ -442,8 +442,10 @@ async def recover_silent_playback(
     occupied = []
     for station in stations.values():
         connected = is_voice_connected(station.voice_client)
-        if admin_paused or station.listener_count <= 0 or (
-            connected and station.player.is_playing()
+        if (
+            admin_paused
+            or station.listener_count <= 0
+            or (connected and station.player.is_playing())
         ):
             station._silence_recovery_since = None
             continue
@@ -489,7 +491,8 @@ async def recover_silent_playback(
         radio.reset(seek)
         # A global track change must reach healthy stations too.
         occupied = [
-            s for s in stations.values()
+            s
+            for s in stations.values()
             if s.listener_count > 0 and is_voice_connected(s.voice_client)
         ]
     state.current_track_id = nxt.track_id
@@ -625,9 +628,7 @@ async def forward_radio(
       is not advanced in the background.
     """
     if not minutes or not math.isfinite(minutes) or minutes <= 0:
-        return ForwardResult(
-            ok=False, message="⚠️ `minutes` must be a positive number of minutes."
-        )
+        return ForwardResult(ok=False, message="⚠️ `minutes` must be a positive number of minutes.")
     if not any(s.listener_count > 0 for s in stations.values()):
         return ForwardResult(
             ok=False, message="⏩ Nobody is listening right now — nothing to skip."
@@ -753,13 +754,9 @@ async def rewind_radio(
       is not rewound in the background.
     """
     if not minutes or not math.isfinite(minutes) or minutes <= 0:
-        return RewindResult(
-            ok=False, message="⚠️ `minutes` must be a positive number of minutes."
-        )
+        return RewindResult(ok=False, message="⚠️ `minutes` must be a positive number of minutes.")
     if not any(s.listener_count > 0 for s in stations.values()):
-        return RewindResult(
-            ok=False, message="⏪ Nobody is listening right now — nothing to skip."
-        )
+        return RewindResult(ok=False, message="⏪ Nobody is listening right now — nothing to skip.")
 
     async with advance_lock:
         track_id = state.current_track_id
@@ -805,8 +802,7 @@ async def rewind_radio(
         paused = not radio.is_playing()
         message = (
             f"⏪ Rewound {_fmt_minutes(float(minutes))} — "
-            f"now at {_fmt_clock(final_offset)}"
-            + (", radio is paused." if paused else ".")
+            f"now at {_fmt_clock(final_offset)}" + (", radio is paused." if paused else ".")
         )
         return RewindResult(
             ok=True,
@@ -833,9 +829,7 @@ async def previous_radio(
     listening station.
     """
     if not any(s.listener_count > 0 for s in stations.values()):
-        return PreviousResult(
-            ok=False, message="⏮️ No active listeners in this radio to skip for."
-        )
+        return PreviousResult(ok=False, message="⏮️ No active listeners in this radio to skip for.")
 
     async with advance_lock:
         try:
@@ -1422,9 +1416,7 @@ async def run(config: BotConfig | None = None) -> None:  # pragma: no cover — 
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, 60.0)
             if nxt is None:
-                log.error(
-                    "advance failed after 10 attempts — silence-recovery loop will retry"
-                )
+                log.error("advance failed after 10 attempts — silence-recovery loop will retry")
                 return
 
             # The cursor moved to a new track starting at offset 0. Don't

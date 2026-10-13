@@ -1,4 +1,5 @@
 """Regression coverage for the useful recovery changes formerly only on main."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -12,7 +13,9 @@ from tests.bot.test_main_helpers import FakePlayer, make_track
 
 def station(*, connected=True, playing=False, listeners=1):
     return SimpleNamespace(
-        guild_id="1", listener_count=listeners, is_paused=True,
+        guild_id="1",
+        listener_count=listeners,
+        is_paused=True,
         player=FakePlayer(playing=playing),
         voice_client=SimpleNamespace(is_connected=lambda: connected),
     )
@@ -27,8 +30,13 @@ def provider(track=None):
 
 async def recover(stations, prov, radio, state, *, now=0, paused=False):
     return await recover_silent_playback(
-        stations, prov, radio, state, admin_paused=paused,
-        silence_gate_seconds=5, now=now,
+        stations,
+        prov,
+        radio,
+        state,
+        admin_paused=paused,
+        silence_gate_seconds=5,
+        now=now,
     )
 
 

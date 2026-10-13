@@ -189,9 +189,7 @@ class TestWaitForDiscordReconnect:
         async def fake_sleep(seconds: float) -> None:
             vc._connected = True  # discord.py finishes during the grace period
 
-        ok = await wait_for_discord_reconnect(
-            lambda: vc, grace_seconds=8.0, sleep=fake_sleep
-        )
+        ok = await wait_for_discord_reconnect(lambda: vc, grace_seconds=8.0, sleep=fake_sleep)
         assert ok is True
 
     async def test_gives_up_when_discord_not_reconnecting(self) -> None:
@@ -211,9 +209,7 @@ class TestWaitForDiscordReconnect:
             nonlocal calls
             calls += 1
 
-        ok = await wait_for_discord_reconnect(
-            lambda: vc, grace_seconds=1.0, sleep=fake_sleep
-        )
+        ok = await wait_for_discord_reconnect(lambda: vc, grace_seconds=1.0, sleep=fake_sleep)
         assert ok is False
         assert calls >= 1
 

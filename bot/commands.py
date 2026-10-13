@@ -133,9 +133,7 @@ def build_commands(
             name = r.server_nickname or r.username
             # Escape markdown characters in names to prevent formatting abuse
             name = discord.utils.escape_markdown(name)
-            lines.append(
-                f"{medal} **#{r.rank}** {name} — {queries.format_hms(r.seconds)}"
-            )
+            lines.append(f"{medal} **#{r.rank}** {name} — {queries.format_hms(r.seconds)}")
 
         embed = discord.Embed(
             title="📊 Listening Leaderboard",
@@ -151,8 +149,7 @@ def build_commands(
         # Find stations in this guild that have listeners.
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
         active_stations = [
-            s for s in stations.values()
-            if s.guild_id == guild_id and s.listener_count > 0
+            s for s in stations.values() if s.guild_id == guild_id and s.listener_count > 0
         ]
         if not active_stations:
             await interaction.response.send_message(
@@ -169,8 +166,7 @@ def build_commands(
         """Handle /previous — skip to the previous track."""
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
         active_stations = [
-            s for s in stations.values()
-            if s.guild_id == guild_id and s.listener_count > 0
+            s for s in stations.values() if s.guild_id == guild_id and s.listener_count > 0
         ]
         if not active_stations:
             await interaction.response.send_message(

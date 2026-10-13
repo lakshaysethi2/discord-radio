@@ -88,14 +88,19 @@ class TestConfig:
     def test_path_normalized(self) -> None:
         assert WebDavProvider(url=BASE, path="/").path == "/"
         assert WebDavProvider(url=BASE, path="").path == "/"
-        assert WebDavProvider(url=BASE, path="mother-of-all-torrents").path == "/mother-of-all-torrents"
+        assert (
+            WebDavProvider(url=BASE, path="mother-of-all-torrents").path
+            == "/mother-of-all-torrents"
+        )
 
 
 # ==================================================================== scan
 class TestScan:
     @respx.mock
     def test_scan_recurses_and_filters_playables(self, provider: WebDavProvider) -> None:
-        respx.request("PROPFIND", f"{BASE}/").mock(return_value=httpx.Response(200, content=_ROOT_MS))
+        respx.request("PROPFIND", f"{BASE}/").mock(
+            return_value=httpx.Response(200, content=_ROOT_MS)
+        )
         respx.request("PROPFIND", f"{BASE}/Lectures2002-2011").mock(
             return_value=httpx.Response(200, content=_LECTURES_MS)
         )
@@ -119,7 +124,9 @@ class TestScan:
 
     @respx.mock
     def test_scan_fails_closed_on_broken_subdir(self, provider: WebDavProvider) -> None:
-        respx.request("PROPFIND", f"{BASE}/").mock(return_value=httpx.Response(200, content=_ROOT_MS))
+        respx.request("PROPFIND", f"{BASE}/").mock(
+            return_value=httpx.Response(200, content=_ROOT_MS)
+        )
         respx.request("PROPFIND", f"{BASE}/Lectures2002-2011/").mock(
             return_value=httpx.Response(500, text="boom")
         )

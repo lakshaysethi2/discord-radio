@@ -372,9 +372,7 @@ class ProviderDB:
             for drop_id in drop_ids:
                 cur.execute("DELETE FROM tracks WHERE track_id=?", (drop_id,))
             for i, track_id in enumerate(final_order):
-                cur.execute(
-                    "UPDATE tracks SET sort_order=? WHERE track_id=?", (float(i), track_id)
-                )
+                cur.execute("UPDATE tracks SET sort_order=? WHERE track_id=?", (float(i), track_id))
         return len(drop_ids)
 
     # -------------------------------------------------------------- cache

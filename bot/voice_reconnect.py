@@ -43,9 +43,7 @@ _GRACE_POLL_SECONDS = 0.5
 
 def is_voice_connected(voice_client: object | None) -> bool:
     """True when a voice client exists and reports itself connected."""
-    return voice_client is not None and bool(
-        getattr(voice_client, "is_connected", lambda: False)()
-    )
+    return voice_client is not None and bool(getattr(voice_client, "is_connected", lambda: False)())
 
 
 def is_discord_reconnecting(voice_client: object | None) -> bool:
@@ -93,7 +91,6 @@ async def disconnect_stale_voice_client(voice_client: object) -> None:
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
     await voice_client.disconnect(force=True)
-
 
 
 class GuildReconnectGuard:

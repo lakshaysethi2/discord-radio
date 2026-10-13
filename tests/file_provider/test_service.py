@@ -107,7 +107,11 @@ class TestSkipUnhealthyProviders:
         class OtherProvider(FakeProvider):
             name = "other"
 
-        s = Service(db, cache, [FakeProvider({"s1": b"a" * 4, "s2": b"b" * 4}), OtherProvider({"o1": b"c" * 4})])
+        s = Service(
+            db,
+            cache,
+            [FakeProvider({"s1": b"a" * 4, "s2": b"b" * 4}), OtherProvider({"o1": b"c" * 4})],
+        )
         s.refresh_playlist()
         db.mark_provider("fake", healthy=False)
         db.set_cursor(1)  # cursor on a 'fake' row; next playable is ahead

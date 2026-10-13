@@ -153,9 +153,10 @@ class Player:
             await self._start_locked(track, seek_seconds=seek_seconds)
 
     async def _start_locked(self, track: TrackResponse, *, seek_seconds: float) -> None:
-        vc_connected = self.voice_client is not None and getattr(
-            self.voice_client, "is_connected", lambda: False
-        )()
+        vc_connected = (
+            self.voice_client is not None
+            and getattr(self.voice_client, "is_connected", lambda: False)()
+        )
         if not vc_connected:
             raise RuntimeError("Cannot start playback: voice client is not connected.")
 

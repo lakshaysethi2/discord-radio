@@ -102,9 +102,7 @@ class TestAnnouncer:
         _seed(db, "u1", alltime_seconds=3600)  # 1h — below 5h threshold
         channel = FakeChannel()
         client = FakeClient(channels={42: channel})
-        ann = MilestoneAnnouncer(
-            client=client, text_channel_id=42, db=db, guild_id="1"
-        )
+        ann = MilestoneAnnouncer(client=client, text_channel_id=42, db=db, guild_id="1")
         got = await ann.check_and_announce("u1")
         assert got == []
         assert channel.sent == []
@@ -113,9 +111,7 @@ class TestAnnouncer:
         _seed(db, "u1", alltime_seconds=5 * 3600)
         channel = FakeChannel()
         client = FakeClient(channels={42: channel})
-        ann = MilestoneAnnouncer(
-            client=client, text_channel_id=42, db=db, guild_id="1"
-        )
+        ann = MilestoneAnnouncer(client=client, text_channel_id=42, db=db, guild_id="1")
         got = await ann.check_and_announce("u1")
         assert len(got) == 1
         assert len(channel.sent) == 1
@@ -126,9 +122,7 @@ class TestAnnouncer:
         _seed(db, "u1", alltime_seconds=100 * 3600)
         channel = FakeChannel()
         client = FakeClient(channels={42: channel})
-        ann = MilestoneAnnouncer(
-            client=client, text_channel_id=42, db=db, guild_id="1"
-        )
+        ann = MilestoneAnnouncer(client=client, text_channel_id=42, db=db, guild_id="1")
         got = await ann.check_and_announce("u1")
         assert len(got) == 3  # 5, 10, 100
         assert len(channel.sent) == 3
@@ -137,9 +131,7 @@ class TestAnnouncer:
         """If the text channel isn't found we still flip the flags."""
         _seed(db, "u1", alltime_seconds=5 * 3600)
         client = FakeClient(channels={})  # nothing at 42
-        ann = MilestoneAnnouncer(
-            client=client, text_channel_id=42, db=db, guild_id="1"
-        )
+        ann = MilestoneAnnouncer(client=client, text_channel_id=42, db=db, guild_id="1")
         got = await ann.check_and_announce("u1")
         assert len(got) == 1
         # Flag flipped even though we couldn't send.
@@ -151,9 +143,7 @@ class TestAnnouncer:
         _seed(db, "u1", alltime_seconds=5 * 3600)
         channel = FakeChannel()
         client = FakeClient(channels={}, fetch_channels={42: channel})
-        ann = MilestoneAnnouncer(
-            client=client, text_channel_id=42, db=db, guild_id="1"
-        )
+        ann = MilestoneAnnouncer(client=client, text_channel_id=42, db=db, guild_id="1")
         got = await ann.check_and_announce("u1")
         assert len(got) == 1
         assert len(channel.sent) == 1
@@ -162,9 +152,7 @@ class TestAnnouncer:
         _seed(db, "u1", alltime_seconds=5 * 3600)
         channel = FakeChannel()
         client = FakeClient(channels={42: channel})
-        ann = MilestoneAnnouncer(
-            client=client, text_channel_id=42, db=db, guild_id="1"
-        )
+        ann = MilestoneAnnouncer(client=client, text_channel_id=42, db=db, guild_id="1")
         await ann.check_and_announce("u1")
         await ann.check_and_announce("u1")  # second call should be silent
         assert len(channel.sent) == 1
@@ -357,9 +345,7 @@ class TestAnnouncerForbidden:
 
         channel = _ForbiddenChannel()
         client = FakeClient(channels={42: channel})
-        ann = MilestoneAnnouncer(
-            client=client, text_channel_id=42, db=db, guild_id="1"
-        )
+        ann = MilestoneAnnouncer(client=client, text_channel_id=42, db=db, guild_id="1")
 
         with caplog.at_level(logging.WARNING):
             got = await ann.check_and_announce("u1")
@@ -374,9 +360,7 @@ class TestAnnouncerForbidden:
 class TestNowPlayingForbidden:
     """403 Forbidden handling in Now Playing embeds."""
 
-    async def test_post_or_replace_403_clears_channel(
-        self, db: Database, caplog
-    ) -> None:
+    async def test_post_or_replace_403_clears_channel(self, db: Database, caplog) -> None:
         import discord
 
         from bot.milestones import NowPlaying
@@ -403,9 +387,7 @@ class TestNowPlayingForbidden:
         channel = _ForbiddenChannel()
         client = FakeClient(channels={42: channel})
         state = FakeState()
-        np = NowPlaying(
-            client=client, text_channel_id=42, state=state, db=db, guild_id="1"
-        )
+        np = NowPlaying(client=client, text_channel_id=42, state=state, db=db, guild_id="1")
 
         track = DummyTrack()
         with caplog.at_level(logging.WARNING):
@@ -413,13 +395,9 @@ class TestNowPlayingForbidden:
 
         assert np.text_channel_id is None  # channel cleared
         assert state.now_playing_message_id is None  # no message id stored
-        assert any(
-            "missing access to text channel" in r.message for r in caplog.records
-        )
+        assert any("missing access to text channel" in r.message for r in caplog.records)
 
-    async def test_update_watcher_count_403_clears_channel(
-        self, db: Database, caplog
-    ) -> None:
+    async def test_update_watcher_count_403_clears_channel(self, db: Database, caplog) -> None:
         import discord
 
         from bot.milestones import NowPlaying
@@ -446,11 +424,7 @@ class TestNowPlayingForbidden:
                 embed = FakeEmbed(
                     title="🎙️ Now Playing",
                     description="Test",
-                    fields=[
-                        FakeEmbedField(
-                            name="Currently watching", value="👥 0"
-                        )
-                    ],
+                    fields=[FakeEmbedField(name="Currently watching", value="👥 0")],
                 )
                 self.msg = _ForbiddenMessageForEdit(id=12345, embeds=[embed])
 
@@ -464,14 +438,10 @@ class TestNowPlayingForbidden:
         client = FakeClient(channels={42: channel})
         state = FakeState()
         state.now_playing_message_id = 12345
-        np = NowPlaying(
-            client=client, text_channel_id=42, state=state, db=db, guild_id="1"
-        )
+        np = NowPlaying(client=client, text_channel_id=42, state=state, db=db, guild_id="1")
 
         with caplog.at_level(logging.WARNING):
             await np.update_watcher_count()
 
         assert np.text_channel_id is None  # channel cleared
-        assert any(
-            "missing access to text channel" in r.message for r in caplog.records
-        )
+        assert any("missing access to text channel" in r.message for r in caplog.records)
