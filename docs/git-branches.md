@@ -23,7 +23,8 @@ content and open PRs before cleanup; never assume “not an ancestor” means
 | `main` | `b5c4516e6eb0992023849f09ed06039f22caa75b` | `archive/2026-10-14-main` |
 | `fix/voice-reconnect-race-prod` | `074bf27e3127d4d4ad5cdeee4e2cf57771399280` | `archive/2026-10-14-voice-reconnect-race-prod` |
 
-PR #35's reconnect guard and tests are incorporated on the working branch,
+PR #35 is closed as superseded by [draft PR #36](https://github.com/lakshaysethi2/discord-radio/pull/36).
+Its reconnect guard and tests are incorporated on the working branch,
 with additional fixes for the real discord.py disconnect API and outstanding
 connection tasks. Useful recovery behavior from `main` is integrated without
 removing `prod`'s flap detector or weakening the 10-second health threshold.
